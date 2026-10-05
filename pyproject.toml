@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fanbase"
+version = "0.4.0"
+description = "Tooling for working with Fanbase"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+# For the registry's metadata.yml and index.yml files.
+dependencies = ["pyyaml>=6"]
+
+[project.scripts]
+fanbase = "fanbase.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fanbase"]
