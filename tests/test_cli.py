@@ -103,11 +103,12 @@ def test_install_all(capsys, registry, served, root, remote):
     assert code == 0 and "3 specs: 3 up to date" in out
 
 
-def test_install_all_reports_what_the_specs_need(capsys, registry, root):
+def test_install_all_reports_what_the_specs_need(capsys, registry, root, pip_calls):
     (registry / "specs/png/png-apng/png-apng.fan").write_text("import brotli\n<start> ::= 'x'\n")
     run(capsys, "--registry", str(registry), "reindex")
-    code, out, _ = run(capsys, "--registry", str(registry), "install", "--all")
+    code, out, _ = run(capsys, "--registry", str(registry), "install", "--all", "--no-requirements")
     assert code == 0 and "requires: pip install brotli" in out
+    assert pip_calls == []
 
 
 def test_install_needs_specs_or_all(capsys, registry, root):

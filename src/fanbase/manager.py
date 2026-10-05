@@ -11,7 +11,12 @@ re-fetched only when the registry says it changed.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import importlib.util
 import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +34,10 @@ from fanbase.registry import (
 
 SPEC_SUFFIX = ".fan"
 META_SUFFIX = ".yml"
+
+
+class RequirementsError(RegistryError):
+    """The Python packages a spec needs could not be installed."""
 
 
 @dataclass(frozen=True)
@@ -144,11 +153,74 @@ def installed_specs(reg: RegistryBase, root: Path | None = None) -> list[Entry]:
     ]
 
 
-def ensure(ref: str, reg: RegistryBase | None = None, root: Path | None = None) -> Installed:
-    """The spec `ref`, installed and current. This is what `fandango -F` calls.
+def requirements_to_install(meta: dict) -> list[str]:
+    """What still has to be installed, as arguments for pip, for a spec with this metadata.
+
+    A spec's `requires` lists the modules it imports, which is not always the name of the
+    package that provides them (`yaml` comes from `pyyaml`). If a spec's metadata has a
+    `pip` list, those requirements are installed instead; without one, the module names are
+    taken to be package names. Only what is not installed yet is returned.
+    """
+    if pip_specs := meta.get("pip"):
+        return [spec for spec in pip_specs if not _distribution_installed(spec)]
+    return [
+        module for module in meta.get("requires") or []
+        if importlib.util.find_spec(module.split(".")[0]) is None
+    ]
+
+
+def _distribution_installed(requirement: str) -> bool:
+    name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement.strip())
+    if name is None:
+        return False
+    try:
+        importlib.metadata.distribution(name.group())
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
+def install_requirements(requirements: list[str]) -> None:
+    """Install packages into the environment fanbase runs in, which is Fandango's too."""
+    if not requirements:
+        return
+    if importlib.util.find_spec("pip") is not None:
+        command = [sys.executable, "-m", "pip", "install", *requirements]
+    elif uv := shutil.which("uv"):
+        command = [uv, "pip", "install", "--python", sys.executable, *requirements]
+    else:
+        raise RequirementsError(
+            f"cannot install {' '.join(requirements)}: this environment has neither pip nor uv"
+        )
+    done = subprocess.run(command, capture_output=True, text=True)
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout).strip().splitlines()[-3:]
+        raise RequirementsError(
+            f"could not install {' '.join(requirements)}: " + " | ".join(detail)
+            + f" (command: {' '.join(command)})"
+        )
+
+
+def ensure_requirements(done: Installed) -> list[str]:
+    """Install the packages a spec needs, if they are missing. Returns what was installed."""
+    missing = requirements_to_install(done.meta)
+    install_requirements(missing)
+    return missing
+
+
+def ensure(
+    ref: str,
+    reg: RegistryBase | None = None,
+    root: Path | None = None,
+    requirements: bool = True,
+) -> Installed:
+    """The spec `ref`, installed and current, with the Python packages it needs.
+    This is what `fandango -F` calls.
 
     If the registry cannot be reached but the spec is already installed, the installed
     copy is used (status "offline"), so a fuzzing run does not depend on the network.
+    Packages the spec needs are installed if they are missing, unless `requirements` is
+    False.
     """
     root = root or install_root()
     try:
@@ -156,9 +228,11 @@ def ensure(ref: str, reg: RegistryBase | None = None, root: Path | None = None) 
             from fanbase.source import find_registry
 
             reg = find_registry(None)
-        return install(reg, reg.resolve(ref), root)
+        done = install(reg, reg.resolve(ref), root)
     except RegistryUnavailable:
-        have = installed_copy(ref, root)
-        if have is None:
+        done = installed_copy(ref, root)
+        if done is None:
             raise
-        return have
+    if requirements:
+        ensure_requirements(done)
+    return done

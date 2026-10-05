@@ -1,5 +1,6 @@
 import functools
 import http.server
+import subprocess
 import threading
 from pathlib import Path
 
@@ -47,3 +48,16 @@ def served(registry):
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.fixture(autouse=True)
+def pip_calls(monkeypatch):
+    """No test runs a real pip: installs are recorded, and succeed."""
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("fanbase.manager.subprocess.run", fake_run)
+    return calls

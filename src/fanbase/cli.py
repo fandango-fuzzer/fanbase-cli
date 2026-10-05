@@ -14,7 +14,14 @@ from collections import Counter
 import yaml
 
 from fanbase import __version__
-from fanbase.manager import Installed, install, install_root, installed_specs, spec_path
+from fanbase.manager import (
+    Installed,
+    ensure_requirements,
+    install,
+    install_root,
+    installed_specs,
+    spec_path,
+)
 from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
 from fanbase.registry import Registry, RegistryBase, RegistryError
 from fanbase.source import find_registry
@@ -23,12 +30,27 @@ from fanbase.source import find_registry
 _VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
 
 
-def _report(done: Installed) -> None:
+def _report(done: Installed, hint_requirements: bool) -> None:
     print(f"{_VERB[done.status]} {done} -> {done.path}")
     if done.status != "current":
         print(f'  include("{done.format}/{done.kind}.fan")')
-    if done.requires:
+    if hint_requirements and done.requires:
         print(f"  requires: pip install {' '.join(done.requires)}")
+
+
+def _install_requirements(results: list[Installed], args) -> None:
+    """Install what the specs need, once for all of them; or only say what is needed."""
+    if args.no_requirements:
+        needs = sorted({package for done in results for package in done.requires})
+        if needs and args.all:
+            print(f"requires: pip install {' '.join(needs)}")
+        return
+    installed: list[str] = []
+    for done in results:
+        for requirement in ensure_requirements(done):
+            if requirement not in installed:
+                installed.append(requirement)
+                print(f"installed requirement {requirement}")
 
 
 def cmd_list(args, reg: RegistryBase) -> int:
@@ -78,13 +100,13 @@ def cmd_install(args, reg: RegistryBase) -> int:
         summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
         where = f" in {results[0].path.parent.parent}" if results else ""
         print(f"{len(results)} specs: {summary}{where}")
-        needs = sorted({package for done in results for package in done.requires})
-        if needs:
-            print(f"requires: pip install {' '.join(needs)}")
-        return 0
-
-    for ref in args.refs:
-        _report(install(reg, reg.resolve(ref), root))
+    else:
+        results = []
+        for ref in args.refs:
+            done = install(reg, reg.resolve(ref), root)
+            _report(done, hint_requirements=args.no_requirements)
+            results.append(done)
+    _install_requirements(results, args)
     return 0
 
 
@@ -96,8 +118,12 @@ def cmd_update(args, reg: RegistryBase) -> int:
         if not entries:
             print("nothing installed")
             return 0
+    results = []
     for entry in entries:
-        _report(install(reg, entry))
+        done = install(reg, entry)
+        _report(done, hint_requirements=args.no_requirements)
+        results.append(done)
+    _install_requirements(results, args)
     return 0
 
 
@@ -159,11 +185,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("install", help="copy specs into Fandango's include path")
     p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, or png/png-apng")
     p.add_argument("--all", action="store_true", help="install every spec in the registry")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs need")
     p.add_argument("--into", help="install directory (default: Fandango's data dir)")
     p.set_defaults(fn=cmd_install)
 
     p = sub.add_parser("update", help="bring installed specs up to date")
     p.add_argument("refs", nargs="*", metavar="ref", help="specs to update (default: all installed)")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs need")
+    p.set_defaults(all=False)
     p.set_defaults(fn=cmd_update)
 
     p = sub.add_parser("reindex", help=f"maintainers: refresh metadata.yml files and {INDEX_FILENAME}")

@@ -69,8 +69,12 @@ fanbase install png png-apng
 
 `fanbase install --all` installs every spec in the registry, which is handy for a test machine that should work offline.
 
-A spec that imports third-party Python packages lists them under `requires`; install
-those before using the spec. Most specs need nothing beyond the standard library.
+A spec that imports third-party Python packages lists them under `requires`. `install` and
+`update` install the ones that are missing, with pip (or `uv pip`, in an environment without
+pip), into the environment `fanbase` runs in, which is the one Fandango runs in. Packages that
+are already installed are left alone. `--no-requirements` skips this and only prints what the
+specs need, for you to install. `fandango -F` installs missing packages the same way. Most
+specs need nothing beyond the standard library.
 
 `--into DIR` installs somewhere else. The default follows Fandango's own search order:
 `$FANDANGO_PATH` (first entry), then `$XDG_DATA_HOME/fandango`, then `~/Library/Fandango`
@@ -152,10 +156,11 @@ reference: https://www.w3.org/TR/png-3/
 | `fanbase` | Version of this package that last ran `reindex`. |
 | `fandango` | Fandango versions the spec is written for. Defaults to `>=1.3`; edit by hand. |
 | `requires` | Third-party Python packages the spec imports, found by scanning its `import` lines (standard library and Fandango excluded). Listed by import name. |
+| `pip` | Optional, written by hand. What to install for the spec, as pip requirements, when a package has a different name than its module: `requires: [yaml]` with `pip: [pyyaml>=6]`. Without it, the names in `requires` are taken to be package names. |
 | `version` | Version of the spec. Written by hand. |
 | `extensions` | File name extensions of the format; the first one is used for generated files. |
 
 Other keys (`title`, `mime`, `reference`, ...) are kept as they are.
 
 Run `fanbase reindex` and it creates `metadata.yml` where it's missing and refreshes the
-generated keys. `description`, `fandango` and any extra keys you add are left alone.
+generated keys. `description`, `fandango`, `pip` and any extra keys you add are left alone.
