@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 
 import yaml
 
@@ -19,9 +20,11 @@ from fanbase.registry import Registry, RegistryBase, RegistryError
 from fanbase.source import find_registry
 
 
+_VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
+
+
 def _report(done: Installed) -> None:
-    verb = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
-    print(f"{verb[done.status]} {done} -> {done.path}")
+    print(f"{_VERB[done.status]} {done} -> {done.path}")
     if done.status != "current":
         print(f'  include("{done.format}/{done.kind}.fan")')
     if done.requires:
@@ -58,11 +61,28 @@ def cmd_show(args, reg: RegistryBase) -> int:
 
 
 def cmd_install(args, reg: RegistryBase) -> int:
+    if args.all == bool(args.refs):
+        raise RegistryError("name the specs to install, or give --all (not both)")
     root = None
     if args.into:
         from pathlib import Path
 
         root = Path(args.into)
+
+    if args.all:
+        entries = [e for fmt in reg.formats() for e in reg.kinds(fmt)]
+        results = [install(reg, e, root) for e in entries]
+        for done in results:
+            print(f"{_VERB[done.status]} {done}")
+        counts = Counter(_VERB[done.status] for done in results)
+        summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
+        where = f" in {results[0].path.parent.parent}" if results else ""
+        print(f"{len(results)} specs: {summary}{where}")
+        needs = sorted({package for done in results for package in done.requires})
+        if needs:
+            print(f"requires: pip install {' '.join(needs)}")
+        return 0
+
     for ref in args.refs:
         _report(install(reg, reg.resolve(ref), root))
     return 0
@@ -137,7 +157,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_show)
 
     p = sub.add_parser("install", help="copy specs into Fandango's include path")
-    p.add_argument("refs", nargs="+", metavar="ref", help="e.g. png, or png/png-apng")
+    p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, or png/png-apng")
+    p.add_argument("--all", action="store_true", help="install every spec in the registry")
     p.add_argument("--into", help="install directory (default: Fandango's data dir)")
     p.set_defaults(fn=cmd_install)
 

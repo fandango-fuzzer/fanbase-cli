@@ -88,3 +88,31 @@ def test_registry_is_not_guessed_from_an_unrelated_specs_folder(tmp_path, monkey
     monkeypatch.delenv("FANBASE_REGISTRY", raising=False)
     monkeypatch.setattr("fanbase.source.RemoteRegistry", lambda url: ("remote", url))
     assert find_registry()[0] == "remote"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_install_all(capsys, registry, served, root, remote):
+    where = served if remote else str(registry)
+    code, out, _ = run(capsys, "--registry", where, "install", "--all")
+    assert code == 0
+    assert "3 specs: 3 installed" in out
+    for fmt, kind in [("png", "png"), ("png", "png-apng"), ("gif", "gif")]:
+        assert spec_path(root, fmt, kind).is_file()
+
+    code, out, _ = run(capsys, "--registry", where, "install", "--all")
+    assert code == 0 and "3 specs: 3 up to date" in out
+
+
+def test_install_all_reports_what_the_specs_need(capsys, registry, root):
+    (registry / "specs/png/png-apng/png-apng.fan").write_text("import brotli\n<start> ::= 'x'\n")
+    run(capsys, "--registry", str(registry), "reindex")
+    code, out, _ = run(capsys, "--registry", str(registry), "install", "--all")
+    assert code == 0 and "requires: pip install brotli" in out
+
+
+def test_install_needs_specs_or_all(capsys, registry, root):
+    code, _, err = run(capsys, "--registry", str(registry), "install")
+    assert code == 2 and "--all" in err
+    code, _, err = run(capsys, "--registry", str(registry), "install", "png", "--all")
+    assert code == 2 and "not both" in err
+    assert not spec_path(root, "png", "png").exists()

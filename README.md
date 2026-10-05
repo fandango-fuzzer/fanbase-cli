@@ -52,7 +52,7 @@ fanbase list png
 
 Print a spec's metadata: description, version, file extensions, required packages.
 
-### `fanbase install REF... [--into DIR]`
+### `fanbase install REF... [--into DIR]`, `fanbase install --all`
 
 Copy specs into the directory Fandango's `include()` searches, so they can be included
 straight away. `REF` is `<format>/<kind>`, a plain kind such as `png-apng`, or a plain
@@ -66,6 +66,8 @@ fanbase install png png-apng
 #   installed png/png-apng -> ~/Library/Fandango/png/png-apng.fan
 #     include("png/png-apng.fan")
 ```
+
+`fanbase install --all` installs every spec in the registry, which is handy for a test machine that should work offline.
 
 A spec that imports third-party Python packages lists them under `requires`; install
 those before using the spec. Most specs need nothing beyond the standard library.
