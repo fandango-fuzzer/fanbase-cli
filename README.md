@@ -157,14 +157,3 @@ Other keys (`title`, `mime`, `reference`, ...) are kept as they are.
 
 Run `fanbase reindex` and it creates `metadata.yml` where it's missing and refreshes the
 generated keys. `description`, `fandango` and any extra keys you add are left alone.
-
-## Development
-
-```bash
-pip install -e . pytest
-pytest
-```
-
-## Licence
-
-Apache-2.0.
