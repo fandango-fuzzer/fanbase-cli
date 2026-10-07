@@ -166,7 +166,7 @@ def cmd_reindex(args, reg: RegistryBase) -> int:
 
     if args.check:
         # The index repeats the `fanbase` stamp, so compare it the way the metadata is compared.
-        index_stale = index_stale and _index_rows(index_file) != _index_rows_from(index_text)
+        index_stale = index_stale and _index_view(index_file) != _index_view_of(index_text)
         stale = [str(e) for e in changed]
         if stale:
             print("metadata.yml out of date: " + ", ".join(stale))
@@ -189,13 +189,15 @@ def cmd_reindex(args, reg: RegistryBase) -> int:
     return 0
 
 
-def _index_rows_from(text: str) -> list[dict]:
-    rows = (yaml.safe_load(text) or {}).get("specs", [])
-    return [{k: v for k, v in row.items() if k != "fanbase"} for row in rows]
+def _index_view_of(text: str) -> tuple[int, list[dict]]:
+    """An index's schema and rows, without the `fanbase` stamp, for comparing two indexes."""
+    data = yaml.safe_load(text) or {}
+    rows = [{k: v for k, v in row.items() if k != "fanbase"} for row in data.get("specs", [])]
+    return data.get("schema", 1), rows
 
 
-def _index_rows(path) -> list[dict]:
-    return _index_rows_from(path.read_text(encoding="utf-8")) if path.is_file() else []
+def _index_view(path) -> tuple[int, list[dict]] | None:
+    return _index_view_of(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
 def build_parser() -> argparse.ArgumentParser:
