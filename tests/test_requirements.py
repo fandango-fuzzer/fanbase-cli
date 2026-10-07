@@ -9,6 +9,7 @@ from fanbase import manager
 from fanbase.cli import main
 from fanbase.manager import (
     RequirementsError,
+    declared_requirements,
     ensure,
     install,
     install_requirements,
@@ -50,6 +51,48 @@ def test_a_pip_list_replaces_the_module_names():
     meta = {"requires": ["yaml"], "pip": ["pyyaml>=6", "not-installed-anywhere>=1.0"]}
     # yaml is importable, but pip says what to install: pyyaml is there, the other is not
     assert requirements_to_install(meta) == ["not-installed-anywhere>=1.0"]
+
+
+@pytest.mark.parametrize("spec", [
+    "pyyaml>=6", "a", "b>=2,<3", "numpy[extra]==1.2.*", "zope.interface~=5.0", "name-with_all.chars>=1.0.post1",
+])
+def test_plain_package_requirements_are_accepted(spec):
+    assert declared_requirements({"pip": [spec]}) == [spec]
+
+
+@pytest.mark.parametrize("spec", [
+    "--index-url=http://example.org/simple",
+    "--extra-index-url http://example.org/simple",
+    "-r requirements.txt",
+    "-e .",
+    "git+https://example.org/x.git",
+    "pkg @ https://example.org/pkg.zip",
+    "https://example.org/pkg.whl",
+    "./local/pkg",
+    "/abs/pkg",
+    "pkg; python_version > '3'",
+    "pkg --hash=sha256:00",
+    "two words",
+    "pkg\n--index-url=http://example.org/simple",
+    "",
+    5,
+    None,
+])
+def test_anything_but_a_package_requirement_is_refused(spec):
+    with pytest.raises(RequirementsError, match="refusing requirement"):
+        declared_requirements({"pip": [spec]})
+
+
+@pytest.mark.parametrize("module", ["--index-url=x", "a b", "x;y", "pkg>=1", "git+https://x", "", 5])
+def test_a_module_name_has_to_be_a_module_name(module):
+    with pytest.raises(RequirementsError, match="refusing requirement"):
+        declared_requirements({"requires": [module]})
+
+
+def test_a_dotted_module_asks_for_its_top_level_package():
+    # `numpy.random` is a module of numpy; asking pip for a package of that name is a different one.
+    assert declared_requirements({"requires": ["numpy.random", "numpy.linalg", "yaml"]}) == ["numpy", "yaml"]
+    assert requirements_to_install({"requires": [MISSING + ".sub"]}) == [MISSING]
 
 
 def test_pip_is_used_when_there_is_pip(pip_calls):
@@ -140,6 +183,31 @@ def test_ensure_installs_requirements_by_default(registry, root, pip_calls):
     done = ensure("png-apng", Registry(registry), root)
     assert done.status == "installed"
     assert pip_calls == [[sys.executable, "-m", "pip", "install", MISSING]]
+
+
+def test_install_refuses_an_unsafe_requirement_and_runs_no_pip(capsys, registry, root, pip_calls):
+    needs(registry, "png-apng", pip=["--index-url=http://example.org/simple"])
+    code, _, err = run(capsys, "--registry", str(registry), "install", "png-apng")
+    assert code == 2
+    assert "png/png-apng" in err and "refusing requirement" in err
+    assert pip_calls == []
+
+
+def test_ensure_refuses_an_unsafe_requirement_and_runs_no_pip(registry, root, pip_calls):
+    # This is the path `fandango -F` takes.
+    needs(registry, "png-apng", pip=["git+https://example.org/x.git"])
+    with pytest.raises(RequirementsError, match="refusing requirement"):
+        ensure("png-apng", Registry(registry), root)
+    assert pip_calls == []
+
+
+def test_the_hint_never_prints_an_unsafe_requirement(capsys, registry, root):
+    # With --no-requirements the user is told what to pip install, and may paste it.
+    needs(registry, "png-apng", pip=["pkg; echo hacked"])
+    code, out, err = run(capsys, "--registry", str(registry), "install", "png-apng", "--no-requirements")
+    assert code == 2
+    assert "echo hacked" not in out
+    assert "refusing requirement" in err
 
 
 def test_ensure_can_leave_requirements_alone(registry, root, pip_calls):

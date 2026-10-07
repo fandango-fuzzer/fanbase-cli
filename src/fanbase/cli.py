@@ -16,6 +16,7 @@ import yaml
 from fanbase import __version__
 from fanbase.manager import (
     Installed,
+    declared_requirements,
     ensure_requirements,
     install,
     install_root,
@@ -34,14 +35,14 @@ def _report(done: Installed, hint_requirements: bool) -> None:
     print(f"{_VERB[done.status]} {done} -> {done.path}")
     if done.status != "current":
         print(f'  include("{done.format}/{done.kind}.fan")')
-    if hint_requirements and done.requires:
-        print(f"  requires: pip install {' '.join(done.requires)}")
+    if hint_requirements and (needs := declared_requirements(done.meta)):
+        print(f"  requires: pip install {' '.join(needs)}")
 
 
 def _install_requirements(results: list[Installed], args) -> None:
     """Install what the specs need, once for all of them; or only say what is needed."""
     if args.no_requirements:
-        needs = sorted({package for done in results for package in done.requires})
+        needs = sorted({package for done in results for package in declared_requirements(done.meta)})
         if needs and args.all:
             print(f"requires: pip install {' '.join(needs)}")
         return

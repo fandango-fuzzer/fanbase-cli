@@ -153,20 +153,58 @@ def installed_specs(reg: RegistryBase, root: Path | None = None) -> list[Entry]:
     ]
 
 
+# What a spec's metadata may ask pip for: a package name, optional extras, optional version
+# specifiers. Nothing else (options, URLs, paths, direct references, markers) is passed on:
+# these strings come from a registry, and a registry is not necessarily ours.
+_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+_SPECIFIER = r"(?:===|==|~=|!=|<=|>=|<|>)[ ]*[A-Za-z0-9.*+!_-]+"
+_REQUIREMENT = re.compile(
+    rf"{_NAME}(?:\[{_NAME}(?:[ ]*,[ ]*{_NAME})*\])?(?:[ ]*{_SPECIFIER}(?:[ ]*,[ ]*{_SPECIFIER})*)?"
+)
+_MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _refuse(value: object, why: str) -> RequirementsError:
+    return RequirementsError(f"refusing requirement {value!r} from the spec's metadata: {why}")
+
+
+def declared_requirements(meta: dict) -> list[str]:
+    """What a spec's metadata asks pip for, as arguments for pip, checked.
+
+    A spec's `requires` lists the modules it imports, which is not always the name of the
+    package that provides them (`yaml` comes from `pyyaml`). If the metadata has a `pip`
+    list, those requirements are what is asked for; without one, the top-level module names
+    are taken to be package names.
+
+    Raises RequirementsError for anything that is not a plain package requirement.
+    """
+    if pip_specs := meta.get("pip"):
+        checked = []
+        for spec in pip_specs:
+            if not isinstance(spec, str) or not _REQUIREMENT.fullmatch(spec.strip()):
+                raise _refuse(spec, "only a package name, with optional extras and version "
+                                    "specifiers, is allowed")
+            checked.append(spec.strip())
+        return checked
+    names: list[str] = []
+    for module in meta.get("requires") or []:
+        name = module.split(".")[0] if isinstance(module, str) else module
+        if not isinstance(name, str) or not _MODULE.fullmatch(name):
+            raise _refuse(module, "not a module name")
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def requirements_to_install(meta: dict) -> list[str]:
     """What still has to be installed, as arguments for pip, for a spec with this metadata.
 
-    A spec's `requires` lists the modules it imports, which is not always the name of the
-    package that provides them (`yaml` comes from `pyyaml`). If a spec's metadata has a
-    `pip` list, those requirements are installed instead; without one, the module names are
-    taken to be package names. Only what is not installed yet is returned.
+    See `declared_requirements`. Only what is not installed yet is returned.
     """
-    if pip_specs := meta.get("pip"):
-        return [spec for spec in pip_specs if not _distribution_installed(spec)]
-    return [
-        module for module in meta.get("requires") or []
-        if importlib.util.find_spec(module.split(".")[0]) is None
-    ]
+    declared = declared_requirements(meta)
+    if meta.get("pip"):
+        return [spec for spec in declared if not _distribution_installed(spec)]
+    return [name for name in declared if importlib.util.find_spec(name) is None]
 
 
 def _distribution_installed(requirement: str) -> bool:
@@ -203,7 +241,10 @@ def install_requirements(requirements: list[str]) -> None:
 
 def ensure_requirements(done: Installed) -> list[str]:
     """Install the packages a spec needs, if they are missing. Returns what was installed."""
-    missing = requirements_to_install(done.meta)
+    try:
+        missing = requirements_to_install(done.meta)
+    except RequirementsError as exc:
+        raise RequirementsError(f"{done}: {exc}") from None
     install_requirements(missing)
     return missing
 
