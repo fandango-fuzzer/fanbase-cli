@@ -18,7 +18,7 @@ from fanbase.registry import RegistryError
 
 def cmd_outdated(args, ctx: Context) -> int:
     """The installed specs that the registries have a different version of."""
-    rows = []
+    rows: list[dict[str, str | None]] = []
     for have in all_installed():
         reg = ctx.registry(have.registry or None)
         try:
@@ -40,7 +40,7 @@ def cmd_outdated(args, ctx: Context) -> int:
     elif not rows:
         print("everything installed is up to date")
     else:
-        width = max(len(row["spec"]) for row in rows)
+        width = max(len(str(row["spec"])) for row in rows)
         for row in rows:
             if row["status"] == "gone":
                 note = f"{row['installed'] or '-'}  (no longer in its registry)"
@@ -70,11 +70,14 @@ def cmd_diff(args, ctx: Context) -> int:
         if have is None:
             raise RegistryError(f"{spec} is not installed, so there is nothing to compare; `fanbase diff A B` compares two specs of a registry")
         old, new = have.path.read_text(encoding="utf-8", errors="replace"), _read(reg, entry)
-        names = (f"installed {spec}", f"registry {spec}")
+        names: tuple[str, str] = (f"installed {spec}", f"registry {spec}")
     else:
         pairs = [ctx.resolve(ref) for ref in args.refs]
         old, new = (_read(reg, entry) for reg, entry in pairs)
-        names = tuple(f"{reg.name + ':' if reg.name else ''}{entry}" for reg, entry in pairs)
+        names = (
+            f"{pairs[0][0].name + ':' if pairs[0][0].name else ''}{pairs[0][1]}",
+            f"{pairs[1][0].name + ':' if pairs[1][0].name else ''}{pairs[1][1]}",
+        )
     text = "".join(difflib.unified_diff(
         old.splitlines(keepends=True), new.splitlines(keepends=True), fromfile=names[0], tofile=names[1],
     ))

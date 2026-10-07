@@ -167,7 +167,7 @@ def reindex(registry: Registry, *, write: bool = True) -> tuple[list[dict], list
     undescribed: list[Entry] = []
 
     planned = []
-    problems = []
+    problems: list[str] = []
     for fmt in registry.formats():
         for entry in registry.kinds(fmt):
             raw = registry.read(entry)

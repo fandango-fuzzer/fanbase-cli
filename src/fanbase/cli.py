@@ -36,7 +36,7 @@ from fanbase.locking import build_lock, check_locked, compare, locked_registry
 from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean, dump_json
 from fanbase.publish import cmd_publish
-from fanbase.registry import Registry, RegistryError, split_registry
+from fanbase.registry import Registry, RegistryBase, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
 from fanbase.source import locate_registry, moves
 
@@ -355,6 +355,7 @@ def cmd_registry_add(args, ctx: Context) -> int:
         token = RegistryConfig("probe", location, args.token_env).token()
         if token is None:
             print(f"note: ${args.token_env} is not set here", file=sys.stderr)
+    opened: RegistryBase
     if location.startswith(("http://", "https://")):
         opened = RemoteRegistry(location, token)
     else:

@@ -19,7 +19,7 @@ def where(ctx, reg: RegistryBase) -> str:
     """Where a registry is read from, as the lock records it."""
     if reg.name:
         return ctx.config.registries[reg.name].url
-    return getattr(reg, "url", None) or str(reg.root)
+    return getattr(reg, "url", None) or str(getattr(reg, "root", ""))
 
 
 def build_lock(ctx, refs: list[str]) -> Lock:
