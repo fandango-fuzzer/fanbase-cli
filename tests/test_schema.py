@@ -6,7 +6,6 @@ from fanbase.manifest import (
     INDEX_FILENAME,
     SCHEMA_VERSION,
     check_metadata,
-    dump_index,
     parse_index,
     reindex,
 )

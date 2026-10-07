@@ -2,7 +2,6 @@ import os
 import subprocess
 
 import pytest
-import yaml
 from conftest import build_registry, republish
 
 from fanbase import contrib, publish

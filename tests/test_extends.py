@@ -5,7 +5,6 @@ import yaml
 from conftest import write_spec
 
 from fanbase.cli import main
-from fanbase.config import load_config, save_config
 from fanbase.deps import split_constraint
 from fanbase.manager import all_installed, ensure, spec_path
 from fanbase.manifest import INDEX_FILENAME, dump_index, reindex

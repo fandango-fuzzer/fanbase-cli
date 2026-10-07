@@ -5,7 +5,6 @@ import yaml
 from conftest import write_spec
 
 from fanbase.cli import main
-from fanbase.config import load_config
 from fanbase.context import Context
 from fanbase.lock import Lock, LockedSpec, dump_lock, load_lock
 from fanbase.manager import all_installed, ensure, lock_context, spec_path

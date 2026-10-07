@@ -110,17 +110,19 @@ def fandango_mismatch(meta: dict) -> str | None:
 def install_root() -> Path:
     """Where Fandango's `include()` will find installed specs.
 
-    Mirrors Fandango's own search order, so an installed spec is importable with no
-    further configuration.
+    Mirrors Fandango's own search order (docs/Including.md there): the first directory of
+    $FANDANGO_PATH; then, on a Mac, ~/Library/Fandango, which is searched before the XDG
+    directory; then $XDG_DATA_HOME/fandango, by default ~/.local/share/fandango. Installing
+    where Fandango looks first means a copy left in a later place cannot shadow the new one.
     """
     if fandango_path := os.environ.get("FANDANGO_PATH"):
         first = fandango_path.split(os.pathsep)[0]
         if first:
             return Path(first)
-    if xdg := os.environ.get("XDG_DATA_HOME"):
-        return Path(xdg) / "fandango"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Fandango"
+    if xdg := os.environ.get("XDG_DATA_HOME"):
+        return Path(xdg) / "fandango"
     return Path.home() / ".local" / "share" / "fandango"
 
 

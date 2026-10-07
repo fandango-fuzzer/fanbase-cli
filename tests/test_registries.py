@@ -175,7 +175,7 @@ def test_install_all_from_a_registry(capsys, registry, added, root):
 def test_a_registry_cannot_take_the_name_of_a_format_that_is_installed(capsys, registry, added, root):
     run(capsys, "--registry", str(registry), "install", "png")  # <root>/png/png.fan
     run(capsys, "--registry", str(registry), "registry", "remove", "acme")
-    from fanbase.config import Config, RegistryConfig, save_config
+    from fanbase.config import RegistryConfig, save_config
 
     config = load_config()
     config.registries["png"] = RegistryConfig("png", str(added.resolve()))

@@ -1,7 +1,6 @@
 import json
 
 import pytest
-import yaml
 from conftest import build_registry, republish
 
 from fanbase.cli import main

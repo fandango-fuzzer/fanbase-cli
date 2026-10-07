@@ -96,9 +96,10 @@ A spec names the Fandango versions it is written for (`fandango: '>=1.3'`). If t
 Fandango you have installed is outside that range, `install`, `update` and `fandango -F`
 warn; the spec is installed and used anyway.
 
-`--into DIR` installs somewhere else. The default follows Fandango's own search order:
-`$FANDANGO_PATH` (first entry), then `$XDG_DATA_HOME/fandango`, then `~/Library/Fandango`
-(macOS) or `~/.local/share/fandango` (elsewhere).
+`--into DIR` installs somewhere else. The default is the first place Fandango looks, following its own
+search order: the first entry of `$FANDANGO_PATH`; else on a Mac `~/Library/Fandango`; else
+`$XDG_DATA_HOME/fandango`, by default `~/.local/share/fandango`. A copy left in a place Fandango looks at
+later cannot shadow what is installed.
 
 ### `fanbase outdated`, `fanbase diff`, `fanbase cite`
 

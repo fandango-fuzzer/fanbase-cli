@@ -26,7 +26,6 @@ from fanbase.manager import (
     all_installed,
     declared_requirements,
     ensure_requirements,
-    entry_sha,
     install,
     install_root,
     spec_path,

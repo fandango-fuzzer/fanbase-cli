@@ -2,7 +2,6 @@ import http.server
 import threading
 
 import pytest
-import yaml
 
 from fanbase.manifest import dump_index
 from fanbase.registry import RegistryError, RegistryUnavailable
