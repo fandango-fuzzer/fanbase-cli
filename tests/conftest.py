@@ -22,6 +22,39 @@ def write_spec(root: Path, fmt: str, kind: str, text: str, description: str = ""
         )
 
 
+def build_registry(root: Path, specs: dict, name: str | None = None) -> Path:
+    """A registry checkout with an up-to-date index: {(format, kind): metadata}. The text of
+    each spec is its name; a `description` among the metadata is kept apart."""
+    import yaml
+
+    for (fmt, kind), meta in specs.items():
+        meta = dict(meta)
+        write_spec(root, fmt, kind, f"<start> ::= '{kind}'\n", meta.pop("description", kind), **meta)
+    if name:
+        (root / "registry.yml").write_text(yaml.safe_dump({"name": name}))
+    reg = Registry(root)
+    rows, _, _ = reindex(reg)
+    (root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
+    return root
+
+
+def republish(root: Path, kind: str, text: str | None = None, **meta) -> None:
+    """The registry's maintainers change a spec: new text and/or new metadata, then reindex."""
+    import yaml
+
+    fmt = kind.split("-")[0]
+    folder = root / "specs" / fmt / kind
+    if text is not None:
+        (folder / f"{kind}.fan").write_text(text)
+    if meta:
+        data = yaml.safe_load((folder / "metadata.yml").read_text())
+        data.update(meta)
+        (folder / "metadata.yml").write_text(yaml.safe_dump(data))
+    reg = Registry(root)
+    rows, _, _ = reindex(reg)
+    (root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
+
+
 @pytest.fixture
 def registry(tmp_path) -> Path:
     """A small registry checkout with an index.yml."""

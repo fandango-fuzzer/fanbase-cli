@@ -51,6 +51,16 @@ fanbase list png
 #   ...
 ```
 
+### `fanbase search [WORD...] [--extension EXT] [--all]`
+
+Find specs by what their name, title, description, file name extension or media type say. Every
+word has to match. `--all` also searches the registries you added.
+
+```bash
+fanbase search animated png
+fanbase search --extension jpg
+```
+
 ### `fanbase show REF`
 
 Print a spec's metadata: description, version, file extensions, required packages.
@@ -89,6 +99,19 @@ warn; the spec is installed and used anyway.
 `--into DIR` installs somewhere else. The default follows Fandango's own search order:
 `$FANDANGO_PATH` (first entry), then `$XDG_DATA_HOME/fandango`, then `~/Library/Fandango`
 (macOS) or `~/.local/share/fandango` (elsewhere).
+
+### `fanbase outdated`, `fanbase diff`, `fanbase cite`
+
+```bash
+fanbase outdated               # installed specs that a registry has a different version of
+fanbase outdated --check       # ... and exit 1 if there are any (for scripts)
+fanbase diff png               # how the registry's png differs from the one you installed
+fanbase diff png acme:png-strict   # how two specs differ (exit 1 when they do)
+fanbase cite png               # how to cite it: with its DOI if it has one, else where and the hash of the file
+fanbase cite png --bibtex
+```
+
+`list`, `show`, `search`, `outdated`, `cite` and `list --installed` take `--json`, for scripts.
 
 ### `fanbase uninstall REF...`
 

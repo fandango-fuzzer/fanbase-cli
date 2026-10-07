@@ -9,7 +9,6 @@ of a spec: `acme:png/png-strict`.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -20,6 +19,7 @@ from fanbase import __version__
 from fanbase.config import RegistryConfig, check_registry_name, check_token_env, save_config
 from fanbase.context import Context
 from fanbase.deps import closure, dependencies, dependents, label, self_names
+from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.manager import (
     Installed,
     all_installed,
@@ -34,19 +34,14 @@ from fanbase.manager import (
 from fanbase.lock import LOCK_FILENAME, load_lock, lock_path, save_lock
 from fanbase.locking import build_lock, check_locked, compare, locked_registry
 from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
+from fanbase.output import clean, dump_json
 from fanbase.registry import Registry, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
 from fanbase.source import locate_registry, moves
 
 _VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
 
-# Anything a registry tells us may end up on the terminal. Control characters could be
-# escape sequences that rewrite what is on screen, so they are shown as `?`.
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-
-
-def _clean(text: object) -> str:
-    return _CONTROL.sub("?", str(text))
+_clean = clean
 
 
 def _report(done: Installed, hint_requirements: bool) -> None:
@@ -91,13 +86,21 @@ def _install_specs(pairs, root: Path | None = None) -> list[Installed]:
     return results
 
 
-def _list_installed(where: str | None) -> int:
+def _list_installed(where: str | None, as_json: bool = False) -> int:
     """What is installed; `where` narrows it: `png`, `acme:` (a whole registry), `acme:png`."""
     name, fmt = split_registry(where) if where else (None, "")
     have = [
         done for done in all_installed()
         if (not where or done.registry == (name or "")) and (not fmt or done.format == fmt)
     ]
+    if as_json:
+        print(dump_json([
+            {"spec": str(done), "registry": done.registry or "fanbase", "format": done.format, "kind": done.kind,
+             "version": done.meta.get("version"), "description": done.meta.get("description"),
+             "path": str(done.path), "sha256": done.meta.get("sha256")}
+            for done in have
+        ]))
+        return 0
     if not have:
         print("nothing installed")
         return 0
@@ -109,7 +112,7 @@ def _list_installed(where: str | None) -> int:
 
 def cmd_list(args, ctx: Context) -> int:
     if args.installed:
-        return _list_installed(args.format)
+        return _list_installed(args.format, args.json)
     name, fmt = split_registry(args.format) if args.format else (None, "")
     reg = ctx.registry(name)
     root = install_root()
@@ -117,6 +120,14 @@ def cmd_list(args, ctx: Context) -> int:
         if fmt not in reg.formats():
             raise RegistryError(f"unknown format: {_clean(fmt)}")
         entries = reg.kinds(fmt)
+        if args.json:
+            print(dump_json([
+                {"kind": e.kind, "version": e.meta.get("version"), "description": e.meta.get("description"),
+                 "extensions": e.meta.get("extensions") or [], "requires": e.requires,
+                 "installed": spec_path(root, e.format, e.kind, reg.name).is_file()}
+                for e in entries
+            ]))
+            return 0
         width = max(len(e.kind) for e in entries)
         for e in entries:
             have = "*" if spec_path(root, e.format, e.kind, reg.name).is_file() else " "
@@ -126,6 +137,9 @@ def cmd_list(args, ctx: Context) -> int:
         return 0
 
     formats = reg.formats()
+    if args.json:
+        print(dump_json([{"format": f, "specs": len(reg.kinds(f))} for f in formats]))
+        return 0
     width = max((len(f) for f in formats), default=0)
     for f in formats:
         n = len(reg.kinds(f))
@@ -138,6 +152,9 @@ def cmd_show(args, ctx: Context) -> int:
     meta = {"format": entry.format, "kind": entry.kind, "path": entry.path, **entry.meta}
     if reg.name:
         meta = {"registry": reg.name, **meta}
+    if args.json:
+        print(dump_json(meta))
+        return 0
     print(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), end="")
     return 0
 
@@ -482,11 +499,35 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list", help="list formats, or the specs of one format")
     p.add_argument("format", nargs="?", help="e.g. png; acme: or acme:png for a registry you added")
     p.add_argument("--installed", action="store_true", help="list what is installed; asks no registry")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show a spec's metadata")
     p.add_argument("ref", help="e.g. png, png/png-apng, or acme:png-strict")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
     p.set_defaults(fn=cmd_show)
+
+    p = sub.add_parser("search", help="find specs by what their name, title, description, extension or type say")
+    p.add_argument("words", nargs="*", metavar="word", help="every word has to match")
+    p.add_argument("--extension", metavar="EXT", help="only specs for this file name extension, e.g. png")
+    p.add_argument("--all", action="store_true", help="also search the registries you added")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
+    p.set_defaults(fn=cmd_search)
+
+    p = sub.add_parser("outdated", help="the installed specs that a registry has a different version of")
+    p.add_argument("--check", action="store_true", help="exit 1 if there are any")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
+    p.set_defaults(fn=cmd_outdated)
+
+    p = sub.add_parser("diff", help="installed against the registry's copy of a spec; or two specs against each other")
+    p.add_argument("refs", nargs="+", metavar="ref", help="one spec, or two")
+    p.set_defaults(fn=cmd_diff)
+
+    p = sub.add_parser("cite", help="how to cite a spec")
+    p.add_argument("ref", help="e.g. png")
+    p.add_argument("--bibtex", action="store_true", help="as a BibTeX entry")
+    p.add_argument("--json", action="store_true", help="as JSON")
+    p.set_defaults(fn=cmd_cite)
 
     p = sub.add_parser("install", help="copy specs into Fandango's include path")
     p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, png/png-apng, or acme:png-strict")
