@@ -160,7 +160,7 @@ def cmd_uninstall(args, reg: None) -> int:
 def cmd_reindex(args, reg: RegistryBase) -> int:
     assert isinstance(reg, Registry)
     rows, changed, undescribed = reindex(reg, write=not args.check)
-    index_text = dump_index(rows)
+    index_text = dump_index(rows, reg.info)
     index_file = reg.root / INDEX_FILENAME
     index_stale = not index_file.is_file() or index_file.read_text(encoding="utf-8") != index_text
 
@@ -189,14 +189,15 @@ def cmd_reindex(args, reg: RegistryBase) -> int:
     return 0
 
 
-def _index_view_of(text: str) -> tuple[int, list[dict]]:
-    """An index's schema and rows, without the `fanbase` stamp, for comparing two indexes."""
+def _index_view_of(text: str) -> tuple[int, dict, list[dict]]:
+    """An index's schema, registry details and rows, without the `fanbase` stamp, for
+    comparing two indexes."""
     data = yaml.safe_load(text) or {}
     rows = [{k: v for k, v in row.items() if k != "fanbase"} for row in data.get("specs", [])]
-    return data.get("schema", 1), rows
+    return data.get("schema", 1), data.get("registry") or {}, rows
 
 
-def _index_view(path) -> tuple[int, list[dict]] | None:
+def _index_view(path) -> tuple[int, dict, list[dict]] | None:
     return _index_view_of(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 

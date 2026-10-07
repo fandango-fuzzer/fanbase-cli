@@ -159,3 +159,62 @@ def test_the_optional_keys_reach_the_index_and_the_client(capsys, registry, serv
     code, out, _ = run(capsys, "--registry", served, "show", "png-apng")
     shown = yaml.safe_load(out)
     assert code == 0 and shown["license"] == "Apache-2.0" and shown["authors"][1]["orcid"] == "0000-0002-1825-0097"
+
+
+# --- an index is not trusted to name only safe things
+
+def index_with(**changes):
+    row = {"format": "png", "kind": "png", "path": "specs/png/png/png.fan", "sha256": "0" * 64}
+    row.update(changes)
+    return yaml.safe_dump({"schema": 2, "specs": [row]})
+
+
+@pytest.mark.parametrize("changes", [
+    {"format": "../../etc"},
+    {"format": "a/b"},
+    {"format": ".."},
+    {"format": ".hidden"},
+    {"format": ""},
+    {"format": 5},
+    {"kind": "../../../.bashrc"},
+    {"kind": "x/../y"},
+    {"kind": "with space"},
+    {"kind": "a\x1b[31mb"},
+    {"path": "../../elsewhere/x.fan"},
+    {"path": "/etc/passwd"},
+    {"path": "specs/../../x.fan"},
+    {"path": "specs//x.fan"},
+    {"path": "specs\\x.fan"},
+    {"path": "https://evil.example/x.fan"},
+    {"path": "C:/x.fan"},
+    {"path": ""},
+    {"sha256": 5},
+])
+def test_an_index_naming_something_unsafe_is_refused(changes):
+    with pytest.raises(RegistryError, match="not safe|malformed"):
+        parse_index(index_with(**changes))
+
+
+def test_ordinary_names_are_fine():
+    entries = parse_index(index_with(format="png", kind="png-apng.v2_x", path="specs/png/png-apng/a.fan"))
+    assert str(entries[0]) == "png/png-apng.v2_x"
+
+
+# --- a registry says who it is
+
+def test_a_registry_yml_goes_into_the_index(capsys, registry):
+    (registry / "registry.yml").write_text(yaml.safe_dump({"name": "acme", "description": "Acme"}))
+    assert run(capsys, "--registry", str(registry), "reindex", "--check")[0] == 1  # the index lacks it
+    run(capsys, "--registry", str(registry), "reindex")
+    index = yaml.safe_load((registry / INDEX_FILENAME).read_text())
+    assert index["registry"] == {"name": "acme", "description": "Acme"}
+    assert list(index) == ["schema", "registry", "specs"]
+    assert run(capsys, "--registry", str(registry), "reindex", "--check")[0] == 0
+    assert Registry(registry).info["name"] == "acme"
+
+
+@pytest.mark.parametrize("name", ["Acme", "1acme", "a b", "a/b", "x" * 40, "fanbase", 5])
+def test_a_registry_name_has_to_be_usable_and_not_the_default(capsys, registry, name):
+    (registry / "registry.yml").write_text(yaml.safe_dump({"name": name}))
+    code, _, err = run(capsys, "--registry", str(registry), "list")
+    assert code == 2 and "registry" in err

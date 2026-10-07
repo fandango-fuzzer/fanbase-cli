@@ -16,7 +16,15 @@ import sys
 import yaml
 
 from fanbase import __version__
-from fanbase.registry import METADATA_FILENAME, Entry, Registry, RegistryError
+from fanbase.registry import (
+    METADATA_FILENAME,
+    Entry,
+    Registry,
+    RegistryError,
+    check_registry_info,
+    is_safe_name,
+    is_safe_path,
+)
 
 INDEX_FILENAME = "index.yml"
 
@@ -170,12 +178,26 @@ def _without_stamp(text: str) -> dict:
     return data
 
 
-def dump_index(rows: list[dict]) -> str:
-    index = {"schema": SCHEMA_VERSION, "specs": rows}
+def dump_index(rows: list[dict], info: dict | None = None) -> str:
+    """index.yml: the schema, the registry's own details if it has any, then every spec."""
+    index: dict = {"schema": SCHEMA_VERSION}
+    if info:
+        index["registry"] = info
+    index["specs"] = rows
     return GENERATED_COMMENT + yaml.safe_dump(index, sort_keys=False, allow_unicode=True)
 
 
 def parse_index(text: str) -> list[Entry]:
+    return parse_index_full(text)[0]
+
+
+def parse_index_full(text: str) -> tuple[list[Entry], dict]:
+    """The specs of an index.yml, and the details of the registry it describes.
+
+    The index comes from a registry we may not control, and what it names is used to build
+    URLs and file names, so a format, a kind or a path that could point outside the
+    registry (or the install directory) is refused.
+    """
     malformed = RegistryError(f"{INDEX_FILENAME} is malformed; the registry needs `fanbase reindex`")
     try:
         data = yaml.safe_load(text) or {}
@@ -187,11 +209,19 @@ def parse_index(text: str) -> list[Entry]:
                 f"{INDEX_FILENAME} uses schema {schema}, and this fanbase understands up to "
                 f"{SCHEMA_VERSION}; upgrade it with `pip install --upgrade fanbase`"
             )
-        return [
-            Entry(row["format"], row["kind"], row["path"], sha256=row.get("sha256", ""),
-                  meta={k: v for k, v in row.items()
-                        if k not in ("format", "kind", "path", "sha256")})
-            for row in data.get("specs", [])
-        ]
+        info = check_registry_info(data.get("registry"), f"{INDEX_FILENAME} registry")
+        entries = []
+        for row in data.get("specs", []):
+            entry = Entry(row["format"], row["kind"], row["path"], sha256=row.get("sha256", ""),
+                          meta={k: v for k, v in row.items()
+                                if k not in ("format", "kind", "path", "sha256")})
+            if not (is_safe_name(entry.format) and is_safe_name(entry.kind)
+                    and is_safe_path(entry.path) and isinstance(entry.sha256, str)):
+                raise RegistryError(
+                    f"{INDEX_FILENAME} names a spec that is not safe to use "
+                    f"({entry.format!r}, {entry.kind!r}, {entry.path!r})"
+                )
+            entries.append(entry)
+        return entries, info
     except (yaml.YAMLError, AttributeError, KeyError, TypeError):
         raise malformed from None

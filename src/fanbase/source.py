@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from fanbase.manifest import INDEX_FILENAME
@@ -15,8 +16,19 @@ ENV_REGISTRY = "FANBASE_REGISTRY"
 DEFAULT_REGISTRY = "https://github.com/fandango-fuzzer/fanbase"
 
 
-def find_registry(explicit: str | None = None, *, local: bool = False) -> RegistryBase:
-    """Locate a registry, in this order:
+@dataclass(frozen=True)
+class Location:
+    """Where the registry is: a local checkout (`path`) or a URL to read it from (`url`)."""
+
+    kind: str  # "path" or "url"
+    value: str
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def locate_registry(explicit: str | None = None, *, local: bool = False) -> Location:
+    """Say where the registry is, in this order:
 
     1. `explicit` (the --registry flag)
     2. $FANBASE_REGISTRY
@@ -25,30 +37,39 @@ def find_registry(explicit: str | None = None, *, local: bool = False) -> Regist
 
     Either of the first two may be a URL instead of a path: a GitHub repo (optionally
     `/tree/<ref>`), or any host serving raw file bytes. It is then read remotely, from its
-    `index.yml`, rather than from a local checkout.
+    `index.yml`, rather than from a local checkout. The first one that is given wins.
 
     `local=True` is for maintainers' commands that write to a checkout: only a path is
     accepted, and a directory with a `specs/` folder counts even before its first reindex.
     """
-    sources = [explicit, os.environ.get(ENV_REGISTRY)]
-    for source in sources:
-        if source and source.startswith(("http://", "https://")):
+    for source in (explicit, os.environ.get(ENV_REGISTRY)):
+        if not source:
+            continue
+        if source.startswith(("http://", "https://")):
             if local:
                 raise RegistryError("this command needs a local registry checkout, not a URL")
-            return RemoteRegistry(source)
-
-    for source in sources:
-        if source:
-            if (Path(source) / "specs").is_dir():
-                return Registry(Path(source))
-            raise RegistryError(f"{source} has no specs/ directory")
+            return Location("url", source)
+        if (Path(source) / "specs").is_dir():
+            return Location("path", source)
+        raise RegistryError(f"{source} has no specs/ directory")
 
     here = Path.cwd().resolve()
     for candidate in (here, *here.parents):
         # Without the marker, any project that happens to have a specs/ folder would match.
         if (candidate / "specs").is_dir() and (local or (candidate / INDEX_FILENAME).is_file()):
-            return Registry(candidate)
+            return Location("path", str(candidate))
 
     if local:
         raise RegistryError("no registry checkout found here; run inside one, or pass --registry PATH")
-    return RemoteRegistry(DEFAULT_REGISTRY)
+    return Location("url", DEFAULT_REGISTRY)
+
+
+def open_registry(location: Location, token: str | None = None) -> RegistryBase:
+    if location.kind == "path":
+        return Registry(Path(location.value))
+    return RemoteRegistry(location.value, token) if token else RemoteRegistry(location.value)
+
+
+def find_registry(explicit: str | None = None, *, local: bool = False) -> RegistryBase:
+    """Locate a registry (see `locate_registry`) and open it."""
+    return open_registry(locate_registry(explicit, local=local))
