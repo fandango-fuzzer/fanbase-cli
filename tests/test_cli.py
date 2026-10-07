@@ -117,3 +117,63 @@ def test_install_needs_specs_or_all(capsys, registry, root):
     code, _, err = run(capsys, "--registry", str(registry), "install", "png", "--all")
     assert code == 2 and "not both" in err
     assert not spec_path(root, "png", "png").exists()
+
+
+NO_NETWORK = "http://127.0.0.1:9"  # nothing listens here
+
+
+def test_list_installed_asks_no_registry(capsys, registry, root):
+    code, out, _ = run(capsys, "--registry", NO_NETWORK, "list", "--installed")
+    assert code == 0 and out.strip() == "nothing installed"
+
+    run(capsys, "--registry", str(registry), "install", "png", "png-apng", "gif")
+    code, out, _ = run(capsys, "--registry", NO_NETWORK, "list", "--installed")
+    assert code == 0
+    assert "png/png  " in out and "plain png" in out
+    assert "png/png-apng" in out and "animated png" in out
+    assert "gif/gif" in out
+
+    code, out, _ = run(capsys, "--registry", NO_NETWORK, "list", "--installed", "png")
+    assert "png/png-apng" in out and "gif/gif" not in out
+
+
+def test_list_installed_ignores_spec_files_fanbase_did_not_install(capsys, root):
+    (root / "mine").mkdir(parents=True)
+    (root / "mine" / "mine.fan").write_text("<start> ::= 'x'\n")
+    code, out, _ = run(capsys, "list", "--installed")
+    assert code == 0 and out.strip() == "nothing installed"
+
+
+def test_uninstall_removes_the_spec_and_its_metadata_offline(capsys, registry, root):
+    run(capsys, "--registry", str(registry), "install", "png", "png-apng", "gif")
+    code, out, _ = run(capsys, "--registry", NO_NETWORK, "uninstall", "png-apng", "gif")
+    assert code == 0 and "removed png/png-apng" in out and "removed gif/gif" in out
+    assert not spec_path(root, "png", "png-apng").exists()
+    assert not spec_path(root, "png", "png-apng").with_suffix(".yml").exists()
+    assert spec_path(root, "png", "png").is_file()  # the other spec is untouched
+    assert not (root / "gif").exists()  # an empty format directory goes with its last spec
+
+
+def test_uninstall_something_not_installed_changes_nothing(capsys, registry, root):
+    run(capsys, "--registry", str(registry), "install", "png")
+    code, _, err = run(capsys, "uninstall", "png", "png-apng")
+    assert code == 2 and "png-apng is not installed" in err
+    assert spec_path(root, "png", "png").is_file()  # nothing was removed, not even the one that was there
+
+
+def test_uninstall_never_removes_a_file_fanbase_did_not_install(capsys, root):
+    mine = root / "png" / "mine.fan"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("<start> ::= 'x'\n")
+    code, _, err = run(capsys, "uninstall", "png/mine")
+    assert code == 2 and "not installed" in err
+    assert mine.is_file()
+
+
+def test_uninstall_keeps_a_directory_that_holds_other_files(capsys, registry, root):
+    run(capsys, "--registry", str(registry), "install", "png")
+    other = root / "png" / "mine.fan"
+    other.write_text("<start> ::= 'x'\n")
+    code, _, _ = run(capsys, "uninstall", "png")
+    assert code == 0 and other.is_file()
+    assert not spec_path(root, "png", "png").exists()

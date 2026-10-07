@@ -16,12 +16,14 @@ import yaml
 from fanbase import __version__
 from fanbase.manager import (
     Installed,
+    all_installed,
     declared_requirements,
     ensure_requirements,
     install,
     install_root,
     installed_specs,
     spec_path,
+    uninstall,
 )
 from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
 from fanbase.registry import Registry, RegistryBase, RegistryError
@@ -54,7 +56,20 @@ def _install_requirements(results: list[Installed], args) -> None:
                 print(f"installed requirement {requirement}")
 
 
-def cmd_list(args, reg: RegistryBase) -> int:
+def _list_installed(fmt: str | None) -> int:
+    have = [done for done in all_installed() if fmt in (None, done.format)]
+    if not have:
+        print("nothing installed")
+        return 0
+    width = max(len(str(done)) for done in have)
+    for done in have:
+        print(f"  {done!s:<{width}}  {done.meta.get('description') or ''}".rstrip())
+    return 0
+
+
+def cmd_list(args, reg: RegistryBase | None) -> int:
+    if args.installed:
+        return _list_installed(args.format)
     root = install_root()
     if args.format:
         if args.format not in reg.formats():
@@ -128,6 +143,12 @@ def cmd_update(args, reg: RegistryBase) -> int:
     return 0
 
 
+def cmd_uninstall(args, reg: None) -> int:
+    for done in uninstall(args.refs):
+        print(f"removed {done} ({done.path})")
+    return 0
+
+
 def cmd_reindex(args, reg: RegistryBase) -> int:
     assert isinstance(reg, Registry)
     rows, changed, undescribed = reindex(reg, write=not args.check)
@@ -177,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("list", help="list formats, or the specs of one format")
     p.add_argument("format", nargs="?", help="e.g. png")
+    p.add_argument("--installed", action="store_true", help="list what is installed; asks no registry")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show a spec's metadata")
@@ -196,6 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(all=False)
     p.set_defaults(fn=cmd_update)
 
+    p = sub.add_parser("uninstall", help="remove installed specs")
+    p.add_argument("refs", nargs="+", metavar="ref", help="e.g. png, or png/png-apng")
+    p.set_defaults(fn=cmd_uninstall, offline=True)
+
     p = sub.add_parser("reindex", help=f"maintainers: refresh metadata.yml files and {INDEX_FILENAME}")
     p.add_argument("--check", action="store_true", help="only report what is out of date; exit 1 if anything is")
     p.set_defaults(fn=cmd_reindex, local=True)
@@ -205,7 +231,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.fn(args, find_registry(args.registry, local=getattr(args, "local", False)))
+        # What only looks at the installed specs must work without a network.
+        offline = getattr(args, "offline", False) or getattr(args, "installed", False)
+        reg = None if offline else find_registry(args.registry, local=getattr(args, "local", False))
+        return args.fn(args, reg)
     except RegistryError as exc:
         print(f"fanbase: {exc}", file=sys.stderr)
         return 2

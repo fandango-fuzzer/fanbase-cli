@@ -10,6 +10,7 @@ re-fetched only when the registry says it changed.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -131,17 +132,63 @@ def install(reg: RegistryBase, entry: Entry, root: Path | None = None) -> Instal
     return Installed(entry.format, entry.kind, target, meta, status)
 
 
+def _split_ref(ref: str) -> tuple[str, str]:
+    """`png` -> (png, png); `png/png-apng` and `png-apng` -> (png, png-apng)."""
+    if "/" in ref:
+        fmt, _, kind = ref.partition("/")
+        return fmt, kind
+    return ref.split("-", 1)[0], ref
+
+
 def installed_copy(ref: str, root: Path | None = None) -> Installed | None:
     """An installed spec by name, without asking any registry. `png`, `png/png-apng`, `png-apng`."""
     root = root or install_root()
-    if "/" in ref:
-        fmt, _, kind = ref.partition("/")
-    else:
-        fmt, kind = ref.split("-", 1)[0], ref
+    fmt, kind = _split_ref(ref)
     path = spec_path(root, fmt, kind)
     if not path.is_file():
         return None
     return Installed(fmt, kind, path, read_metadata(_meta_path(path)), "offline")
+
+
+def all_installed(root: Path | None = None) -> list[Installed]:
+    """Every spec Fanbase installed under `root`, found on disk; no registry is asked.
+
+    A spec counts when the `<kind>.yml` that `install` writes is next to it. That is what
+    tells it from a spec file someone put in the same directory by hand.
+    """
+    root = root or install_root()
+    found = []
+    for path in sorted(root.glob(f"*/*{SPEC_SUFFIX}")):
+        meta_file = _meta_path(path)
+        if not meta_file.is_file():
+            continue
+        try:
+            meta = read_metadata(meta_file)
+        except RegistryError:
+            continue
+        if meta.get("format") == path.parent.name and meta.get("kind") == path.stem:
+            found.append(Installed(path.parent.name, path.stem, path, meta, "offline"))
+    return found
+
+
+def uninstall(refs: list[str], root: Path | None = None) -> list[Installed]:
+    """Remove installed specs, named as for `install`. Removes all of them, or, if one of
+    them is not installed, none. Only specs Fanbase installed are touched."""
+    root = root or install_root()
+    have = {(done.format, done.kind): done for done in all_installed(root)}
+    found: list[Installed] = []
+    for ref in refs:
+        done = have.get(_split_ref(ref))
+        if done is None:
+            raise RegistryError(f"{ref} is not installed by fanbase under {root}")
+        if done not in found:
+            found.append(done)
+    for done in found:
+        done.path.unlink(missing_ok=True)
+        _meta_path(done.path).unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            done.path.parent.rmdir()  # only when nothing else is in it
+    return found
 
 
 def installed_specs(reg: RegistryBase, root: Path | None = None) -> list[Entry]:
