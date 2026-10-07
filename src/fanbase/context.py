@@ -67,6 +67,12 @@ class Context:
         self._default = reg
         return reg
 
+    def add_registry(self, name: str, reg: RegistryBase) -> RegistryBase:
+        """Make an open registry known under a name, as if the user had added it."""
+        reg.name = name
+        self._named[name] = reg
+        return reg
+
     @property
     def default(self) -> RegistryBase:
         if self._default is None:

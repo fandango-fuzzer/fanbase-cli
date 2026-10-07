@@ -194,7 +194,7 @@ def install(reg: RegistryBase, entry: Entry, root: Path | None = None) -> Instal
     return Installed(entry.format, entry.kind, target, meta, status, registry)
 
 
-def _split_ref(ref: str) -> tuple[str, str, str]:
+def split_ref(ref: str) -> tuple[str, str, str]:
     """`png` -> ('', png, png); `png/png-apng` and `png-apng` -> ('', png, png-apng);
     `acme:png-strict` -> (acme, png, png-strict)."""
     name, rest = split_registry(ref)
@@ -209,7 +209,7 @@ def installed_copy(ref: str, root: Path | None = None) -> Installed | None:
     """An installed spec by name, without asking any registry. `png`, `png/png-apng`,
     `png-apng`, `acme:png-strict`."""
     root = root or install_root()
-    registry, fmt, kind = _split_ref(ref)
+    registry, fmt, kind = split_ref(ref)
     if registry and not REGISTRY_NAME.fullmatch(registry):
         return None
     path = spec_path(root, fmt, kind, registry)
@@ -260,7 +260,7 @@ def _needed_by(found: list[Installed], root: Path) -> list[tuple[Installed, Inst
         except RegistryError:
             continue
         for dep in deps:
-            target = going.get((dep.registry, *_split_ref(dep.ref)[1:]))
+            target = going.get((dep.registry, *split_ref(dep.ref)[1:]))
             if target is not None:
                 blocked.append((target, other))
     return blocked
@@ -277,7 +277,7 @@ def uninstall(refs: list[str], root: Path | None = None, force: bool = False) ->
     have = {(done.registry, done.format, done.kind): done for done in all_installed(root)}
     found: list[Installed] = []
     for ref in refs:
-        done = have.get(_split_ref(ref))
+        done = have.get(split_ref(ref))
         if done is None:
             raise RegistryError(f"{ref} is not installed by fanbase under {root}")
         if done not in found:

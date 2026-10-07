@@ -252,3 +252,25 @@ def parse_index_full(text: str) -> tuple[list[Entry], dict]:
         return entries, info
     except (yaml.YAMLError, AttributeError, KeyError, TypeError):
         raise malformed from None
+
+
+def index_view(text: str) -> tuple[int, dict, list[dict]]:
+    """An index's schema, registry details and rows, without the `fanbase` stamp, for
+    comparing two indexes."""
+    data = yaml.safe_load(text) or {}
+    rows = [{k: v for k, v in row.items() if k != "fanbase"} for row in data.get("specs", [])]
+    return data.get("schema", 1), data.get("registry") or {}, rows
+
+
+def index_is_stale(registry: Registry, rows: list[dict]) -> bool:
+    """Does the registry's index.yml differ from what `reindex` would write now?
+
+    The index repeats the `fanbase` stamp, which says nothing about the specs, so it is
+    left out of the comparison.
+    """
+    index_file = registry.root / INDEX_FILENAME
+    if not index_file.is_file():
+        return True
+    fresh = dump_index(rows, registry.info)
+    current = index_file.read_text(encoding="utf-8")
+    return current != fresh and index_view(current) != index_view(fresh)

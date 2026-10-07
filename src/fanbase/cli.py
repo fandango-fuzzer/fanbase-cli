@@ -19,6 +19,7 @@ from fanbase import __version__
 from fanbase.config import RegistryConfig, check_registry_name, check_token_env, save_config
 from fanbase.context import Context
 from fanbase.deps import closure, dependencies, dependents, label, self_names
+from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
 from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.manager import (
     Installed,
@@ -33,8 +34,9 @@ from fanbase.manager import (
 )
 from fanbase.lock import LOCK_FILENAME, load_lock, lock_path, save_lock
 from fanbase.locking import build_lock, check_locked, compare, locked_registry
-from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
+from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean, dump_json
+from fanbase.publish import cmd_publish
 from fanbase.registry import Registry, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
 from fanbase.source import locate_registry, moves
@@ -451,11 +453,9 @@ def cmd_reindex(args, ctx: Context) -> int:
     rows, changed, undescribed = reindex(reg, write=not args.check)
     index_text = dump_index(rows, reg.info)
     index_file = reg.root / INDEX_FILENAME
-    index_stale = not index_file.is_file() or index_file.read_text(encoding="utf-8") != index_text
 
     if args.check:
-        # The index repeats the `fanbase` stamp, so compare it the way the metadata is compared.
-        index_stale = index_stale and _index_view(index_file) != _index_view_of(index_text)
+        index_stale = index_is_stale(reg, rows)
         stale = [str(e) for e in changed]
         if stale:
             print("metadata.yml out of date: " + ", ".join(stale))
@@ -476,18 +476,6 @@ def cmd_reindex(args, ctx: Context) -> int:
     if undescribed:
         print("no description yet: " + ", ".join(str(e) for e in undescribed))
     return 0
-
-
-def _index_view_of(text: str) -> tuple[int, dict, list[dict]]:
-    """An index's schema, registry details and rows, without the `fanbase` stamp, for
-    comparing two indexes."""
-    data = yaml.safe_load(text) or {}
-    rows = [{k: v for k, v in row.items() if k != "fanbase"} for row in data.get("specs", [])]
-    return data.get("schema", 1), data.get("registry") or {}, rows
-
-
-def _index_view(path) -> tuple[int, dict, list[dict]] | None:
-    return _index_view_of(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -585,6 +573,44 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("unpin", help="undo a pin")
     p.add_argument("ref")
     p.set_defaults(fn=cmd_unpin)
+
+    p = sub.add_parser("new", help="start a spec in the registry checkout")
+    p.add_argument("ref", help="e.g. png-fancy, or webp/webp for a new format")
+    p.add_argument("--extends", action="append", metavar="SPEC", help="a spec to build on (repeat for several); e.g. png, or 'png>=1.0'")
+    p.add_argument("--description", help="one line")
+    p.set_defaults(fn=cmd_new, local=True)
+
+    p = sub.add_parser("fork", help="copy a spec of any registry into the checkout under a new name")
+    p.add_argument("ref", help="the spec to copy, e.g. png, or acme:png-strict")
+    p.add_argument("--as", dest="name", required=True, metavar="NAME", help="what to call the copy, e.g. png-fancy")
+    p.add_argument("--into", metavar="DIR", help="the registry checkout to put it in (default: the one you are in)")
+    p.set_defaults(fn=cmd_fork)
+
+    p = sub.add_parser("check", help="is the checkout in order, and does each spec produce inputs?")
+    p.add_argument("refs", nargs="*", metavar="ref", help="the specs to check (default: all)")
+    p.add_argument("--count", type=int, default=3, metavar="N", help="inputs to ask Fandango for from each spec (default 3)")
+    p.add_argument("--timeout", type=int, default=300, metavar="SECONDS", help="per spec (default 300)")
+    p.add_argument("--no-generate", action="store_true", help="do not run Fandango")
+    p.add_argument("--strict", action="store_true", help="a spec with no description, authors or license is a failure")
+    p.add_argument("--base", metavar="REGISTRY", help="a registry (URL or path) to compare with: a changed spec needs a new version")
+    p.set_defaults(fn=cmd_check, local=True)
+
+    p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
+    p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")
+    p.add_argument("--markdown", action="store_true", help="as release notes")
+    p.add_argument("--check", action="store_true", help="exit 1 if a changed spec has no new version")
+    p.set_defaults(fn=cmd_changes)
+
+    p = sub.add_parser("publish", help="take your change in the registry checkout to a pull request")
+    p.add_argument("--branch", help="the branch to use (default: a new one named after the change)")
+    p.add_argument("--base-branch", metavar="BRANCH", help="the branch the pull request is against (default: the remote's)")
+    p.add_argument("--message", help="the commit message, and the pull request title")
+    p.add_argument("--count", type=int, default=1, metavar="N", help="inputs to ask Fandango for from each spec (default 1)")
+    p.add_argument("--no-generate", action="store_true", help="do not run Fandango")
+    p.add_argument("--no-pr", action="store_true", help="push the branch, but do not open a pull request")
+    p.add_argument("--dry-run", action="store_true", help="say what would be done, and do nothing")
+    p.add_argument("--yes", action="store_true", help="do not ask first")
+    p.set_defaults(fn=cmd_publish, local=True)
 
     p = sub.add_parser("reindex", help=f"maintainers: refresh metadata.yml files and {INDEX_FILENAME}")
     p.add_argument("--check", action="store_true", help="only report what is out of date; exit 1 if anything is")

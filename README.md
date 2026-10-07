@@ -203,6 +203,39 @@ user gives a registry is the user's own. Inside a registry called `acme`, `acme:
 own `png-base`. `fanbase reindex` checks all of this (names, ranges, cycles) and writes nothing if
 something is wrong.
 
+## Contributing a spec
+
+The public registry is a git repository, and a spec gets into it by a pull request. Clone it (or
+your fork of it), and from inside the clone:
+
+```bash
+fanbase new png-fancy --extends png --description "PNGs with ..."   # a spec to edit, with its metadata
+fanbase fork png-apng --as png-apng-mine                            # or: a copy of an existing spec to change
+$EDITOR specs/png/png-fancy/png-fancy.fan
+fanbase check                    # metadata and index in order? does each spec make Fandango produce inputs?
+fanbase publish                  # branch, commit, push, and a pull request (needs git, and gh for the pull request)
+```
+
+- `new` makes `specs/<format>/<kind>/` with a `.fan` to edit and a `metadata.yml` (authors from your git
+  settings, `status: draft`, `version: '0.1'`). With `--extends` the `.fan` includes what it builds on.
+  A format's default spec is named after the format; any other is `<format>-<what makes it different>`.
+- `fork` copies a spec of any registry (`acme:png-strict` too) into the checkout under a new name. It
+  records `derived_from: fanbase:png/png-apng@1.0` and keeps the original authors, adding you. Use
+  `--into DIR` to put it in another checkout, such as your own registry.
+- `check [SPEC...]` verifies that `metadata.yml` and `index.yml` are up to date, that what specs extend
+  exists, and that each spec makes Fandango produce inputs (it needs `fandango` installed; `--count N`,
+  `--timeout S`, `--no-generate`). It notes specs with no description, authors or license, and `--strict`
+  makes that a failure. `--base REGISTRY` also demands that a spec that changed since then has a new version.
+- `changes --base REGISTRY` lists what was added, changed and removed since another registry or release
+  (`--markdown` for release notes, `--check` to fail when a changed spec kept its version).
+- `publish` refreshes `metadata.yml` and `index.yml`, runs `check`, says what it is going to do, and asks
+  (`--yes` answers for scripts, `--dry-run` only shows the plan). Then it makes a branch (unless you are on
+  one already), commits `specs/`, `index.yml` and `registry.yml` as you, pushes, and opens the pull request
+  with `gh` (`--no-pr` to stop after the push). Nothing else in your clone is touched.
+
+Give a spec that changed a new `version`: it is what lets everyone, and the registry's checks, tell the
+new from the old.
+
 ## Registries besides the public one
 
 The public registry is the default, and the only one a plain name such as `png` can ever
