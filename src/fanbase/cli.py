@@ -41,6 +41,12 @@ def _report(done: Installed, hint_requirements: bool) -> None:
         print(f"  requires: pip install {' '.join(needs)}")
 
 
+def _warn_fandango(results: list[Installed]) -> None:
+    for done in results:
+        if problem := done.fandango_mismatch:
+            print(f"warning: {done} {problem}", file=sys.stderr)
+
+
 def _install_requirements(results: list[Installed], args) -> None:
     """Install what the specs need, once for all of them; or only say what is needed."""
     if args.no_requirements:
@@ -122,6 +128,7 @@ def cmd_install(args, reg: RegistryBase) -> int:
             done = install(reg, reg.resolve(ref), root)
             _report(done, hint_requirements=args.no_requirements)
             results.append(done)
+    _warn_fandango(results)
     _install_requirements(results, args)
     return 0
 
@@ -139,6 +146,7 @@ def cmd_update(args, reg: RegistryBase) -> int:
         done = install(reg, entry)
         _report(done, hint_requirements=args.no_requirements)
         results.append(done)
+    _warn_fandango(results)
     _install_requirements(results, args)
     return 0
 

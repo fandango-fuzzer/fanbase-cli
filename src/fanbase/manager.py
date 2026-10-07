@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
+import logging
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 from fanbase.registry import (
     Entry,
@@ -35,6 +37,9 @@ from fanbase.registry import (
 
 SPEC_SUFFIX = ".fan"
 META_SUFFIX = ".yml"
+FANDANGO_DISTRIBUTION = "fandango-fuzzer"
+
+LOG = logging.getLogger("fanbase")
 
 
 class RequirementsError(RegistryError):
@@ -61,6 +66,34 @@ class Installed:
     @property
     def extensions(self) -> list[str]:
         return list(self.meta.get("extensions") or [])
+
+    @property
+    def fandango_mismatch(self) -> str | None:
+        return fandango_mismatch(self.meta)
+
+
+def fandango_mismatch(meta: dict) -> str | None:
+    """Why the Fandango that is installed does not suit a spec, or None if it does.
+
+    A spec's `fandango` is a version range ('>=1.3'). Without Fandango installed (the
+    client can be used alone) or without a range there is nothing to compare, so nothing
+    is reported. This is a warning, not a refusal: a spec often works on older versions
+    than the one it was written for.
+    """
+    wanted = meta.get("fandango")
+    if not wanted:
+        return None
+    try:
+        specifier = SpecifierSet(str(wanted))
+    except InvalidSpecifier:
+        return f"cannot read its fandango version range {wanted!r}"
+    try:
+        have = importlib.metadata.version(FANDANGO_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    if specifier.contains(have, prereleases=True):
+        return None
+    return f"is written for fandango {wanted}, and fandango {have} is installed"
 
 
 def install_root() -> Path:
@@ -321,6 +354,8 @@ def ensure(
         done = installed_copy(ref, root)
         if done is None:
             raise
+    if problem := done.fandango_mismatch:
+        LOG.warning("Fanbase: %s %s", done, problem)
     if requirements:
         ensure_requirements(done)
     return done
