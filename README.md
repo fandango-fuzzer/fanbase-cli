@@ -37,6 +37,9 @@ Without an argument, list the formats in the registry. With a format, list its s
 with a one-line description and any Python packages they need. Installed specs are
 marked with `*`.
 
+`fanbase list --installed [FORMAT]` lists what is installed, from the install directory
+alone. It works offline.
+
 ```bash
 fanbase list
 #   bmp   3 specs
@@ -73,12 +76,25 @@ A spec that imports third-party Python packages lists them under `requires`. `in
 `update` install the ones that are missing, with pip (or `uv pip`, in an environment without
 pip), into the environment `fanbase` runs in, which is the one Fandango runs in. Packages that
 are already installed are left alone. `--no-requirements` skips this and only prints what the
-specs need, for you to install. `fandango -F` installs missing packages the same way. Most
+specs need, for you to install. Only plain package requirements are ever passed to pip:
+a package name with optional extras and version specifiers. Anything else in a spec's
+metadata (an option such as `--index-url`, a URL, a path) is refused, and nothing is
+installed. `fandango -F` installs missing packages the same way. Most
 specs need nothing beyond the standard library.
+
+A spec names the Fandango versions it is written for (`fandango: '>=1.3'`). If the
+Fandango you have installed is outside that range, `install`, `update` and `fandango -F`
+warn; the spec is installed and used anyway.
 
 `--into DIR` installs somewhere else. The default follows Fandango's own search order:
 `$FANDANGO_PATH` (first entry), then `$XDG_DATA_HOME/fandango`, then `~/Library/Fandango`
 (macOS) or `~/.local/share/fandango` (elsewhere).
+
+### `fanbase uninstall REF...`
+
+Remove installed specs, with their metadata copy. It works offline, removes all the named
+specs or none, and only touches specs `fanbase` installed: a `.fan` file you put in the
+install directory yourself is never removed.
 
 ### `fanbase update [REF...]`
 
@@ -127,7 +143,9 @@ The default spec of a format is the kind named after the format: `specs/png/png/
 Any other kind is named `<format>-<what makes it different>`, e.g. `png-apng`.
 
 `index.yml` is generated: it repeats every `metadata.yml`, plus each spec's path and
-SHA-256, so a client can browse the registry from a single file.
+SHA-256, so a client can browse the registry from a single file. It starts with the
+`schema` it follows (currently 2; a file without one is schema 1). A client that meets a
+newer schema than it knows says so and asks you to upgrade `fanbase`.
 
 An installed spec is `<install dir>/<format>/<kind>.fan`, with a copy of its metadata next
 to it as `<kind>.yml`.
@@ -159,6 +177,15 @@ reference: https://www.w3.org/TR/png-3/
 | `pip` | Optional, written by hand. What to install for the spec, as pip requirements, when a package has a different name than its module: `requires: [yaml]` with `pip: [pyyaml>=6]`. Without it, the names in `requires` are taken to be package names. |
 | `version` | Version of the spec. Written by hand. |
 | `extensions` | File name extensions of the format; the first one is used for generated files. |
+| `authors` | Optional. Who wrote the spec: names, or `{name, orcid}`. |
+| `license` | Optional. SPDX identifier of the spec's license, e.g. `Apache-2.0`. |
+| `source` | Optional. What the spec was made from: a URL, or a few words. |
+| `extends`, `derived_from` | Optional. Specs this one builds on or was forked from, as refs (`png`, `png/png-apng`). Recorded and checked for shape; not acted on yet. |
+| `status` | Optional. `draft`, `stable` or `deprecated`. |
+| `doi` | Optional. DOI of an archived copy, e.g. `10.5281/zenodo.1234567`. |
+
+All the optional keys are written by hand and kept in this order after the generated keys;
+`reindex` refuses a value of the wrong shape, naming the spec, and writes nothing in that case.
 
 Other keys (`title`, `mime`, `reference`, ...) are kept as they are.
 
