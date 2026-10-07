@@ -36,6 +36,22 @@ def registry(tmp_path) -> Path:
 
 
 @pytest.fixture
+def acme(tmp_path) -> Path:
+    """A registry of someone else's: it calls itself acme, and has a spec the default one lacks."""
+    import yaml
+
+    root = tmp_path / "acme-registry"
+    write_spec(root, "png", "png-strict", "<start> ::= 'strict'\n", "strict png", extensions=["png"])
+    write_spec(root, "png", "png", "<start> ::= 'acme png'\n", "acme's own png", extensions=["png"])
+    write_spec(root, "bmp", "bmp", "<start> ::= 'bmp'\n", "plain bmp", extensions=["bmp"])
+    (root / "registry.yml").write_text(yaml.safe_dump({"name": "acme", "description": "Acme"}))
+    reg = Registry(root)
+    rows, _, _ = reindex(reg)
+    (root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
+    return root
+
+
+@pytest.fixture
 def served(registry):
     """The same registry, served over HTTP; yields its URL."""
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(registry))
@@ -61,3 +77,9 @@ def pip_calls(monkeypatch):
 
     monkeypatch.setattr("fanbase.manager.subprocess.run", fake_run)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def own_config(tmp_path_factory, monkeypatch):
+    """No test reads or writes the config file of whoever runs the tests."""
+    monkeypatch.setenv("FANBASE_CONFIG", str(tmp_path_factory.mktemp("config") / "config.yml"))

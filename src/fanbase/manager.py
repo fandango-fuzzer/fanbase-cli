@@ -1,8 +1,9 @@
 """Installing specs from a registry into Fandango's data directory, and keeping them current.
 
 An installed spec is `<root>/<format>/<kind>.fan`, next to a small `<kind>.yml` copy of its
-metadata. The root is one of the directories Fandango searches for `include()`, so an
-installed spec can be included, or given to `fandango -F`, straight away.
+metadata; one from a registry the user added is `<root>/<registry>/<format>/<kind>.fan`. The
+root is one of the directories Fandango searches for `include()`, so an installed spec can
+be included, or given to `fandango -F`, straight away.
 
 Nothing here needs the whole registry: a spec is fetched when it is asked for, and
 re-fetched only when the registry says it changed.
@@ -32,7 +33,9 @@ from fanbase.registry import (
     RegistryBase,
     RegistryError,
     RegistryUnavailable,
+    REGISTRY_NAME,
     read_metadata,
+    split_registry,
 )
 
 SPEC_SUFFIX = ".fan"
@@ -55,9 +58,17 @@ class Installed:
     path: Path
     meta: dict
     status: str  # "installed", "updated", "current", or "offline" (registry unreachable)
+    registry: str = ""  # the name of the registry, if not the default one
 
     def __str__(self) -> str:
-        return f"{self.format}/{self.kind}"
+        spec = f"{self.format}/{self.kind}"
+        return f"{self.registry}:{spec}" if self.registry else spec
+
+    @property
+    def include_path(self) -> str:
+        """What a spec writes in `include()` to use this one."""
+        prefix = f"{self.registry}/" if self.registry else ""
+        return f"{prefix}{self.format}/{self.kind}{SPEC_SUFFIX}"
 
     @property
     def requires(self) -> list[str]:
@@ -113,8 +124,10 @@ def install_root() -> Path:
     return Path.home() / ".local" / "share" / "fandango"
 
 
-def spec_path(root: Path, fmt: str, kind: str) -> Path:
-    return root / fmt / f"{kind}{SPEC_SUFFIX}"
+def spec_path(root: Path, fmt: str, kind: str, registry: str = "") -> Path:
+    """Where a spec is installed under `root`."""
+    base = root / registry if registry else root
+    return base / fmt / f"{kind}{SPEC_SUFFIX}"
 
 
 def _meta_path(path: Path) -> Path:
@@ -142,10 +155,23 @@ def _entry_sha(reg: RegistryBase, entry: Entry) -> str:
     return entry.sha256 or _sha256(reg.read(entry))
 
 
+def _check_registry_dir(root: Path, registry: str) -> None:
+    """A registry's directory must not be the directory of a format of the default registry."""
+    folder = root / registry
+    if folder.is_dir() and any(folder.glob(f"*{SPEC_SUFFIX}")):
+        raise RegistryError(
+            f"{folder} holds specs of a format called {registry}, so a registry cannot be "
+            "installed under that name"
+        )
+
+
 def install(reg: RegistryBase, entry: Entry, root: Path | None = None) -> Installed:
     """Put one spec under `root`, unless the copy there is already the registry's."""
     root = root or install_root()
-    target = spec_path(root, entry.format, entry.kind)
+    registry = reg.name
+    if registry:
+        _check_registry_dir(root, registry)
+    target = spec_path(root, entry.format, entry.kind, registry)
     meta_file = _meta_path(target)
 
     local = target.read_bytes() if target.is_file() else None
@@ -158,40 +184,50 @@ def install(reg: RegistryBase, entry: Entry, root: Path | None = None) -> Instal
         status = "installed" if local is None else "updated"
 
     meta = dict(entry.meta)
+    meta.pop("registry", None)  # what a registry says about itself is not for it to decide here
     meta.update(format=entry.format, kind=entry.kind, sha256=_sha256(raw))
+    if registry:
+        meta["registry"] = registry
     text = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
     if not meta_file.is_file() or meta_file.read_text(encoding="utf-8") != text:
         _write_atomic(meta_file, text.encode("utf-8"))
-    return Installed(entry.format, entry.kind, target, meta, status)
+    return Installed(entry.format, entry.kind, target, meta, status, registry)
 
 
-def _split_ref(ref: str) -> tuple[str, str]:
-    """`png` -> (png, png); `png/png-apng` and `png-apng` -> (png, png-apng)."""
-    if "/" in ref:
-        fmt, _, kind = ref.partition("/")
-        return fmt, kind
-    return ref.split("-", 1)[0], ref
+def _split_ref(ref: str) -> tuple[str, str, str]:
+    """`png` -> ('', png, png); `png/png-apng` and `png-apng` -> ('', png, png-apng);
+    `acme:png-strict` -> (acme, png, png-strict)."""
+    name, rest = split_registry(ref)
+    registry = name or ""
+    if "/" in rest:
+        fmt, _, kind = rest.partition("/")
+        return registry, fmt, kind
+    return registry, rest.split("-", 1)[0], rest
 
 
 def installed_copy(ref: str, root: Path | None = None) -> Installed | None:
-    """An installed spec by name, without asking any registry. `png`, `png/png-apng`, `png-apng`."""
+    """An installed spec by name, without asking any registry. `png`, `png/png-apng`,
+    `png-apng`, `acme:png-strict`."""
     root = root or install_root()
-    fmt, kind = _split_ref(ref)
-    path = spec_path(root, fmt, kind)
+    registry, fmt, kind = _split_ref(ref)
+    if registry and not REGISTRY_NAME.fullmatch(registry):
+        return None
+    path = spec_path(root, fmt, kind, registry)
     if not path.is_file():
         return None
-    return Installed(fmt, kind, path, read_metadata(_meta_path(path)), "offline")
+    return Installed(fmt, kind, path, read_metadata(_meta_path(path)), "offline", registry)
 
 
 def all_installed(root: Path | None = None) -> list[Installed]:
     """Every spec Fanbase installed under `root`, found on disk; no registry is asked.
 
-    A spec counts when the `<kind>.yml` that `install` writes is next to it. That is what
-    tells it from a spec file someone put in the same directory by hand.
+    A spec counts when the `<kind>.yml` that `install` writes is next to it, and agrees with
+    where the spec is. That is what tells it from a spec file someone put in the same
+    directory by hand.
     """
     root = root or install_root()
     found = []
-    for path in sorted(root.glob(f"*/*{SPEC_SUFFIX}")):
+    for path in [*root.glob(f"*/*{SPEC_SUFFIX}"), *root.glob(f"*/*/*{SPEC_SUFFIX}")]:
         meta_file = _meta_path(path)
         if not meta_file.is_file():
             continue
@@ -199,16 +235,21 @@ def all_installed(root: Path | None = None) -> list[Installed]:
             meta = read_metadata(meta_file)
         except RegistryError:
             continue
-        if meta.get("format") == path.parent.name and meta.get("kind") == path.stem:
-            found.append(Installed(path.parent.name, path.stem, path, meta, "offline"))
-    return found
+        registry = path.parent.parent.name if len(path.relative_to(root).parts) == 3 else ""
+        if (
+            meta.get("format") == path.parent.name
+            and meta.get("kind") == path.stem
+            and (meta.get("registry") or "") == registry
+        ):
+            found.append(Installed(path.parent.name, path.stem, path, meta, "offline", registry))
+    return sorted(found, key=lambda done: (done.registry, done.format, done.kind))
 
 
 def uninstall(refs: list[str], root: Path | None = None) -> list[Installed]:
     """Remove installed specs, named as for `install`. Removes all of them, or, if one of
     them is not installed, none. Only specs Fanbase installed are touched."""
     root = root or install_root()
-    have = {(done.format, done.kind): done for done in all_installed(root)}
+    have = {(done.registry, done.format, done.kind): done for done in all_installed(root)}
     found: list[Installed] = []
     for ref in refs:
         done = have.get(_split_ref(ref))
@@ -221,6 +262,8 @@ def uninstall(refs: list[str], root: Path | None = None) -> list[Installed]:
         _meta_path(done.path).unlink(missing_ok=True)
         with contextlib.suppress(OSError):
             done.path.parent.rmdir()  # only when nothing else is in it
+            if done.registry:
+                done.path.parent.parent.rmdir()
     return found
 
 
@@ -229,7 +272,7 @@ def installed_specs(reg: RegistryBase, root: Path | None = None) -> list[Entry]:
     root = root or install_root()
     return [
         e for fmt in reg.formats() for e in reg.kinds(fmt)
-        if spec_path(root, e.format, e.kind).is_file()
+        if spec_path(root, e.format, e.kind, reg.name).is_file()
     ]
 
 
@@ -334,9 +377,12 @@ def ensure(
     reg: RegistryBase | None = None,
     root: Path | None = None,
     requirements: bool = True,
+    ctx=None,
 ) -> Installed:
     """The spec `ref`, installed and current, with the Python packages it needs.
     This is what `fandango -F` calls.
+
+    `ref` may name a registry the user added (`acme:png-strict`), or be pinned to one.
 
     If the registry cannot be reached but the spec is already installed, the installed
     copy is used (status "offline"), so a fuzzing run does not depend on the network.
@@ -344,14 +390,15 @@ def ensure(
     False.
     """
     root = root or install_root()
-    try:
-        if reg is None:
-            from fanbase.source import find_registry
+    if ctx is None:
+        from fanbase.context import Context
 
-            reg = find_registry(None)
-        done = install(reg, reg.resolve(ref), root)
+        ctx = Context(default=reg)
+    try:
+        registry, entry = ctx.resolve(ref)
+        done = install(registry, entry, root)
     except RegistryUnavailable:
-        done = installed_copy(ref, root)
+        done = installed_copy(ctx.pinned(ref), root)
         if done is None:
             raise
     if problem := done.fandango_mismatch:

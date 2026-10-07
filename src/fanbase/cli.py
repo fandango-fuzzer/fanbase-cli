@@ -1,19 +1,24 @@
 """The `fanbase` command.
 
-Browses and installs from a Fanbase registry. By default that is the public registry, read
+Browses and installs from Fanbase registries. By default that is the public registry, read
 over the network from its `index.yml`; a spec is only fetched when you ask for it. A local
-checkout works too, which is what maintainers use.
+checkout works too, which is what maintainers use. Registries you add are named in front
+of a spec: `acme:png/png-strict`.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import Counter
+from pathlib import Path
 
 import yaml
 
 from fanbase import __version__
+from fanbase.config import RegistryConfig, check_registry_name, check_token_env, save_config
+from fanbase.context import Context
 from fanbase.manager import (
     Installed,
     all_installed,
@@ -21,22 +26,29 @@ from fanbase.manager import (
     ensure_requirements,
     install,
     install_root,
-    installed_specs,
     spec_path,
     uninstall,
 )
 from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
-from fanbase.registry import Registry, RegistryBase, RegistryError
-from fanbase.source import find_registry
-
+from fanbase.registry import Registry, RegistryError, split_registry
+from fanbase.remote import RemoteRegistry
+from fanbase.source import locate_registry
 
 _VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
 
+# Anything a registry tells us may end up on the terminal. Control characters could be
+# escape sequences that rewrite what is on screen, so they are shown as `?`.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _clean(text: object) -> str:
+    return _CONTROL.sub("?", str(text))
+
 
 def _report(done: Installed, hint_requirements: bool) -> None:
-    print(f"{_VERB[done.status]} {done} -> {done.path}")
+    print(f"{_VERB[done.status]} {_clean(done)} -> {done.path}")
     if done.status != "current":
-        print(f'  include("{done.format}/{done.kind}.fan")')
+        print(f'  include("{_clean(done.include_path)}")')
     if hint_requirements and (needs := declared_requirements(done.meta)):
         print(f"  requires: pip install {' '.join(needs)}")
 
@@ -44,7 +56,7 @@ def _report(done: Installed, hint_requirements: bool) -> None:
 def _warn_fandango(results: list[Installed]) -> None:
     for done in results:
         if problem := done.fandango_mismatch:
-            print(f"warning: {done} {problem}", file=sys.stderr)
+            print(f"warning: {_clean(done)} {_clean(problem)}", file=sys.stderr)
 
 
 def _install_requirements(results: list[Installed], args) -> None:
@@ -62,70 +74,78 @@ def _install_requirements(results: list[Installed], args) -> None:
                 print(f"installed requirement {requirement}")
 
 
-def _list_installed(fmt: str | None) -> int:
-    have = [done for done in all_installed() if fmt in (None, done.format)]
+def _list_installed(where: str | None) -> int:
+    """What is installed; `where` narrows it: `png`, `acme:` (a whole registry), `acme:png`."""
+    name, fmt = split_registry(where) if where else (None, "")
+    have = [
+        done for done in all_installed()
+        if (not where or done.registry == (name or "")) and (not fmt or done.format == fmt)
+    ]
     if not have:
         print("nothing installed")
         return 0
     width = max(len(str(done)) for done in have)
     for done in have:
-        print(f"  {done!s:<{width}}  {done.meta.get('description') or ''}".rstrip())
+        print(f"  {_clean(done):<{width}}  {_clean(done.meta.get('description') or '')}".rstrip())
     return 0
 
 
-def cmd_list(args, reg: RegistryBase | None) -> int:
+def cmd_list(args, ctx: Context) -> int:
     if args.installed:
         return _list_installed(args.format)
+    name, fmt = split_registry(args.format) if args.format else (None, "")
+    reg = ctx.registry(name)
     root = install_root()
-    if args.format:
-        if args.format not in reg.formats():
-            raise RegistryError(f"unknown format: {args.format}")
-        entries = reg.kinds(args.format)
+    if fmt:
+        if fmt not in reg.formats():
+            raise RegistryError(f"unknown format: {_clean(fmt)}")
+        entries = reg.kinds(fmt)
         width = max(len(e.kind) for e in entries)
         for e in entries:
-            have = "*" if spec_path(root, e.format, e.kind).is_file() else " "
+            have = "*" if spec_path(root, e.format, e.kind, reg.name).is_file() else " "
             notes = [e.meta.get("description"), e.requires and f"(requires: {', '.join(e.requires)})"]
-            print(f" {have}{e.kind:<{width}}  {' '.join(n for n in notes if n)}".rstrip())
+            print(_clean(f" {have}{e.kind:<{width}}  {' '.join(n for n in notes if n)}").rstrip())
         print("\n* installed")
         return 0
 
     formats = reg.formats()
     width = max((len(f) for f in formats), default=0)
-    for fmt in formats:
-        n = len(reg.kinds(fmt))
-        print(f"  {fmt:<{width}}  {n} spec{'' if n == 1 else 's'}")
+    for f in formats:
+        n = len(reg.kinds(f))
+        print(_clean(f"  {f:<{width}}  {n} spec{'' if n == 1 else 's'}"))
     return 0
 
 
-def cmd_show(args, reg: RegistryBase) -> int:
-    entry = reg.resolve(args.ref)
+def cmd_show(args, ctx: Context) -> int:
+    reg, entry = ctx.resolve(args.ref)
     meta = {"format": entry.format, "kind": entry.kind, "path": entry.path, **entry.meta}
+    if reg.name:
+        meta = {"registry": reg.name, **meta}
     print(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), end="")
     return 0
 
 
-def cmd_install(args, reg: RegistryBase) -> int:
+def cmd_install(args, ctx: Context) -> int:
     if args.all == bool(args.refs):
         raise RegistryError("name the specs to install, or give --all (not both)")
-    root = None
-    if args.into:
-        from pathlib import Path
-
-        root = Path(args.into)
+    if args.source and not args.all:
+        raise RegistryError("--from goes with --all")
+    root = Path(args.into) if args.into else install_root()
 
     if args.all:
+        reg = ctx.registry(args.source)
         entries = [e for fmt in reg.formats() for e in reg.kinds(fmt)]
         results = [install(reg, e, root) for e in entries]
         for done in results:
-            print(f"{_VERB[done.status]} {done}")
+            print(f"{_VERB[done.status]} {_clean(done)}")
         counts = Counter(_VERB[done.status] for done in results)
         summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
-        where = f" in {results[0].path.parent.parent}" if results else ""
-        print(f"{len(results)} specs: {summary}{where}")
+        print(f"{len(results)} specs: {summary} in {root}")
     else:
         results = []
         for ref in args.refs:
-            done = install(reg, reg.resolve(ref), root)
+            reg, entry = ctx.resolve(ref)
+            done = install(reg, entry, root)
             _report(done, hint_requirements=args.no_requirements)
             results.append(done)
     _warn_fandango(results)
@@ -133,16 +153,22 @@ def cmd_install(args, reg: RegistryBase) -> int:
     return 0
 
 
-def cmd_update(args, reg: RegistryBase) -> int:
+def cmd_update(args, ctx: Context) -> int:
     if args.refs:
-        entries = [reg.resolve(ref) for ref in args.refs]
+        pairs = [ctx.resolve(ref) for ref in args.refs]
     else:
-        entries = installed_specs(reg)
-        if not entries:
-            print("nothing installed")
+        pairs = []
+        for have in all_installed():
+            reg = ctx.registry(have.registry or None)
+            try:
+                pairs.append((reg, reg.resolve(f"{have.format}/{have.kind}")))
+            except RegistryError:
+                print(f"warning: {_clean(have)} is no longer in its registry; kept", file=sys.stderr)
+        if not pairs:
+            print("nothing installed" if not all_installed() else "nothing to update")
             return 0
     results = []
-    for entry in entries:
+    for reg, entry in pairs:
         done = install(reg, entry)
         _report(done, hint_requirements=args.no_requirements)
         results.append(done)
@@ -151,13 +177,127 @@ def cmd_update(args, reg: RegistryBase) -> int:
     return 0
 
 
-def cmd_uninstall(args, reg: None) -> int:
+def cmd_uninstall(args, ctx: Context) -> int:
     for done in uninstall(args.refs):
-        print(f"removed {done} ({done.path})")
+        print(f"removed {_clean(done)} ({done.path})")
     return 0
 
 
-def cmd_reindex(args, reg: RegistryBase) -> int:
+def _confirm_trust(args, name: str, where: str) -> None:
+    print(f"Adding the registry {name} ({_clean(where)}).")
+    print(
+        "Its specs are Python code that runs inside Fandango with your permissions, and may\n"
+        "ask for Python packages to be installed. Add only registries you trust."
+    )
+    if args.trust:
+        return
+    if not sys.stdin.isatty():
+        raise RegistryError("not adding it without your confirmation; pass --trust to give it")
+    if input("Trust it? [y/N] ").strip().lower() not in ("y", "yes"):
+        raise RegistryError("not added")
+
+
+def cmd_registry_add(args, ctx: Context) -> int:
+    location = args.url
+    token = None
+    if args.token_env is not None:
+        check_token_env(args.token_env)
+        token = RegistryConfig("probe", location, args.token_env).token()
+        if token is None:
+            print(f"note: ${args.token_env} is not set here", file=sys.stderr)
+    if location.startswith(("http://", "https://")):
+        opened = RemoteRegistry(location, token)
+    else:
+        path = Path(location).expanduser()
+        opened = Registry(path)
+        location = str(path.resolve())
+    chosen = args.name if args.name is not None else opened.info.get("name")
+    if chosen is None:
+        raise RegistryError("the registry does not say what it is called; give it a name with --name")
+    name = check_registry_name(chosen)
+    existing = ctx.config.registries.get(name)
+    if existing and existing.url == location:
+        print(f"{name} is already added")
+        return 0
+    if existing:
+        raise RegistryError(f"{name} is already added, as {existing.url}; remove it first")
+    if (declared := opened.info.get("name")) and declared != name:
+        print(
+            f"note: the registry calls itself {declared}; its specs include each other as "
+            f"{declared}/..., which only works under that name",
+            file=sys.stderr,
+        )
+    _confirm_trust(args, name, location)
+    ctx.config.registries[name] = RegistryConfig(name, location, args.token_env)
+    path = save_config(ctx.config)
+    print(f"added {name}: {len(opened.formats())} formats ({path})")
+    return 0
+
+
+def cmd_registry_remove(args, ctx: Context) -> int:
+    if args.name not in ctx.config.registries:
+        raise RegistryError(f"no registry called {args.name!r}")
+    mine = [done for done in all_installed() if done.registry == args.name]
+    if args.uninstall and mine:
+        uninstall([str(done) for done in mine])
+        print(f"removed {len(mine)} installed specs of {args.name}")
+        mine = []
+    del ctx.config.registries[args.name]
+    dropped = [ref for ref, target in ctx.config.pins.items() if split_registry(target)[0] == args.name]
+    for ref in dropped:
+        del ctx.config.pins[ref]
+    save_config(ctx.config)
+    print(f"removed the registry {args.name}")
+    if dropped:
+        print(f"unpinned {', '.join(dropped)}")
+    if mine:
+        print(f"{len(mine)} installed specs of {args.name} are still there; "
+              f"`fanbase uninstall {mine[0]}` removes one, or remove them all with --uninstall next time")
+    return 0
+
+
+def cmd_registry_list(args, ctx: Context) -> int:
+    rows = [("fanbase", str(locate_registry(args.registry, local=False)), "default")]
+    rows += [(reg.name, reg.url, "") for reg in sorted(ctx.config.registries.values(), key=lambda r: r.name)]
+    width = max(len(name) for name, _, _ in rows)
+    for name, where, note in rows:
+        print(_clean(f"  {name:<{width}}  {where}" + (f"  ({note})" if note else "")))
+    return 0
+
+
+def cmd_pin(args, ctx: Context) -> int:
+    if not args.ref and not args.target:
+        if not ctx.config.pins:
+            print("nothing pinned")
+        for ref, target in sorted(ctx.config.pins.items()):
+            print(_clean(f"  {ref} -> {target}"))
+        return 0
+    if not args.target:
+        raise RegistryError("pin what to what? e.g. `fanbase pin png acme:png/png-strict`")
+    if split_registry(args.ref)[0]:
+        raise RegistryError(f"{args.ref} already names a registry; pin a plain name such as png")
+    name, _ = split_registry(args.target)
+    if not name:
+        raise RegistryError(f"pin {args.ref} to a spec of a registry you added, as name:spec")
+    if not args.no_check:
+        ctx.registry(name).resolve(split_registry(args.target)[1])
+    ctx.config.pins[args.ref.strip()] = args.target.strip()
+    save_config(ctx.config)
+    print(f"{args.ref} now means {args.target}")
+    return 0
+
+
+def cmd_unpin(args, ctx: Context) -> int:
+    if args.ref not in ctx.config.pins:
+        raise RegistryError(f"{args.ref} is not pinned")
+    del ctx.config.pins[args.ref]
+    save_config(ctx.config)
+    print(f"{args.ref} is no longer pinned")
+    return 0
+
+
+def cmd_reindex(args, ctx: Context) -> int:
+    reg = ctx.default
     assert isinstance(reg, Registry)
     rows, changed, undescribed = reindex(reg, write=not args.check)
     index_text = dump_index(rows, reg.info)
@@ -208,17 +348,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list", help="list formats, or the specs of one format")
-    p.add_argument("format", nargs="?", help="e.g. png")
+    p.add_argument("format", nargs="?", help="e.g. png; acme: or acme:png for a registry you added")
     p.add_argument("--installed", action="store_true", help="list what is installed; asks no registry")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show a spec's metadata")
-    p.add_argument("ref", help="e.g. png, or png/png-apng")
+    p.add_argument("ref", help="e.g. png, png/png-apng, or acme:png-strict")
     p.set_defaults(fn=cmd_show)
 
     p = sub.add_parser("install", help="copy specs into Fandango's include path")
-    p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, or png/png-apng")
+    p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, png/png-apng, or acme:png-strict")
     p.add_argument("--all", action="store_true", help="install every spec in the registry")
+    p.add_argument("--from", dest="source", metavar="NAME", help="with --all: a registry you added, instead of the default")
     p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs need")
     p.add_argument("--into", help="install directory (default: Fandango's data dir)")
     p.set_defaults(fn=cmd_install)
@@ -230,8 +371,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_update)
 
     p = sub.add_parser("uninstall", help="remove installed specs")
-    p.add_argument("refs", nargs="+", metavar="ref", help="e.g. png, or png/png-apng")
-    p.set_defaults(fn=cmd_uninstall, offline=True)
+    p.add_argument("refs", nargs="+", metavar="ref", help="e.g. png, png/png-apng, or acme:png-strict")
+    p.set_defaults(fn=cmd_uninstall)
+
+    p = sub.add_parser("registry", help="the registries you use besides the default one")
+    reg_sub = p.add_subparsers(dest="registry_command", required=True)
+    q = reg_sub.add_parser("add", help="add a registry: a URL, or the path of a local checkout")
+    q.add_argument("url")
+    q.add_argument("--name", help="what to call it (default: the name the registry gives itself)")
+    q.add_argument("--token-env", metavar="VAR", help="the environment variable that holds a token, for a private registry")
+    q.add_argument("--trust", action="store_true", help="do not ask whether you trust it")
+    q.set_defaults(fn=cmd_registry_add)
+    q = reg_sub.add_parser("remove", help="forget a registry")
+    q.add_argument("name")
+    q.add_argument("--uninstall", action="store_true", help="also remove the specs installed from it")
+    q.set_defaults(fn=cmd_registry_remove)
+    q = reg_sub.add_parser("list", help="the default registry and the ones you added")
+    q.set_defaults(fn=cmd_registry_list)
+
+    p = sub.add_parser("pin", help="make a plain name mean a spec of a registry you added; with no arguments, list the pins")
+    p.add_argument("ref", nargs="?", help="a plain name, e.g. png")
+    p.add_argument("target", nargs="?", help="e.g. acme:png/png-strict")
+    p.add_argument("--no-check", action="store_true", help="do not look the target up first")
+    p.set_defaults(fn=cmd_pin)
+
+    p = sub.add_parser("unpin", help="undo a pin")
+    p.add_argument("ref")
+    p.set_defaults(fn=cmd_unpin)
 
     p = sub.add_parser("reindex", help=f"maintainers: refresh metadata.yml files and {INDEX_FILENAME}")
     p.add_argument("--check", action="store_true", help="only report what is out of date; exit 1 if anything is")
@@ -242,12 +408,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        # What only looks at the installed specs must work without a network.
-        offline = getattr(args, "offline", False) or getattr(args, "installed", False)
-        reg = None if offline else find_registry(args.registry, local=getattr(args, "local", False))
-        return args.fn(args, reg)
+        # Registries are opened when a command asks for them, so what only looks at what
+        # is installed works without a network.
+        ctx = Context(explicit=args.registry, local=getattr(args, "local", False))
+        return args.fn(args, ctx)
     except RegistryError as exc:
-        print(f"fanbase: {exc}", file=sys.stderr)
+        print(f"fanbase: {_clean(exc)}", file=sys.stderr)
         return 2
 
 

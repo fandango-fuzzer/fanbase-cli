@@ -109,6 +109,56 @@ committing changes to the registry. It needs a local checkout.
 `--check` changes nothing and exits with status 1 if anything is out of date, which makes
 it fit for CI.
 
+## Registries besides the public one
+
+The public registry is the default, and the only one a plain name such as `png` can ever
+mean. Other registries (a team's own, a research group's, a private one) are specs in a git
+repo with the same layout. You add them by name, and then name them in front of a spec:
+
+```bash
+fanbase registry add https://github.com/acme/fuzz-specs      # named by the registry itself: acme
+fanbase registry add ~/code/our-specs --name ours             # a local checkout, under a name you pick
+fanbase list acme:                    # the formats of acme
+fanbase list acme:png                 # its PNG specs
+fanbase install acme:png-strict       # -> <install dir>/acme/png/png-strict.fan
+fanbase registry list
+fanbase registry remove acme [--uninstall]
+```
+
+A spec of an added registry is installed under the registry's name, so `include("acme/png/png-strict.fan")`
+finds it and it never clashes with a spec of the same name elsewhere. `fandango -F acme:png-strict` works too.
+
+**Adding a registry is a decision to trust it.** Its specs are Python code that runs inside Fandango
+with your permissions, and they may ask for Python packages to be installed (plain package names only,
+as above). `fanbase registry add` says so and asks; `--trust` answers yes in a script. Installing a
+plain name never reaches a registry you did not name: `fanbase install png-strict` fails if only `acme`
+has it, and tells you `acme:png/png-strict` exists.
+
+To use a spec of another registry wherever you say `png`, **pin** it. The pin is yours, in your config:
+
+```bash
+fanbase pin png acme:png/png-strict   # `png` now means that spec for you (fandango -F png too)
+fanbase pin                           # list the pins
+fanbase unpin png
+```
+
+A private registry takes a token from an environment variable you name; the file holds the name,
+never the token, and the token is sent to the registry's host and nowhere else:
+
+```bash
+fanbase registry add https://github.com/acme/private-specs --token-env ACME_TOKEN
+```
+
+Your registries and pins are in `$FANBASE_CONFIG`, else `$XDG_CONFIG_HOME/fanbase/config.yml`, else
+`~/.config/fanbase/config.yml`.
+
+### Publishing a registry of your own
+
+Make a git repo with the layout below, add a `registry.yml` (`name: acme`, `description: ...`) to its
+root, and run `fanbase reindex`. The name is what others call your registry and what your specs are
+installed under, so a spec of yours can include another with `include("acme/png/png-base.fan")`.
+Names are lower case letters, digits and dashes; `fanbase` is the default registry's.
+
 ## Finding the registry
 
 `fanbase` looks, in order, at:

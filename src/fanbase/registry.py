@@ -64,6 +64,21 @@ class Entry:
         return list(self.meta.get("requires") or [])
 
 
+_PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9-]*):(.*)", re.DOTALL)
+
+
+def split_registry(ref: str) -> tuple[str | None, str]:
+    """`acme:png/png-strict` -> (acme, png/png-strict); `png` -> (None, png).
+
+    `fanbase:png` names the default registry explicitly and is returned as (None, png).
+    """
+    m = _PREFIX.fullmatch(ref.strip())
+    if not m:
+        return None, ref.strip()
+    name, rest = m.group(1), m.group(2)
+    return (None if name == DEFAULT_REGISTRY_NAME else name), rest
+
+
 def is_safe_name(name: object) -> bool:
     return isinstance(name, str) and SAFE_NAME.fullmatch(name) is not None
 
