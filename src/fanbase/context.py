@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fanbase.config import Config, RegistryConfig, load_config
+from fanbase.deps import check_version, split_constraint
 from fanbase.registry import (
     Registry,
     RegistryBase,
@@ -74,20 +75,24 @@ class Context:
         return self._named[name]
 
     def pinned(self, ref: str) -> str:
-        """What the user pinned `ref` to, or `ref` itself."""
-        return self.config.pins.get(ref.strip(), ref.strip())
+        """What the user pinned `ref` to, or `ref` itself. Any version range is left out."""
+        base, _ = split_constraint(ref)
+        return self.config.pins.get(base, base)
 
     def resolve(self, ref: str):
-        """The registry and the entry a ref means."""
-        ref = self.pinned(ref)
-        name, rest = split_registry(ref)
+        """The registry and the entry a ref means. A ref may carry a version range
+        (`png>=1.2`, `png@1.2`), which the registry's version of the spec has to satisfy."""
+        _, specifier = split_constraint(ref)
+        name, rest = split_registry(self.pinned(ref))
         reg = self.registry(name)
         try:
-            return reg, reg.resolve(rest)
+            entry = reg.resolve(rest)
         except RegistryError as exc:
             if name is None and (elsewhere := self.elsewhere(rest)):
                 raise RegistryError(f"{exc}; the registries you added have: {', '.join(elsewhere)}") from None
             raise
+        check_version(str(entry), entry.meta, specifier, ref.strip())
+        return reg, entry
 
     def elsewhere(self, ref: str) -> list[str]:
         """The registries the user added that have a spec by this name: a hint, never a fallback."""

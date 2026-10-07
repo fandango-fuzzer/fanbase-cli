@@ -19,6 +19,7 @@ import yaml
 from fanbase import __version__
 from fanbase.config import RegistryConfig, check_registry_name, check_token_env, save_config
 from fanbase.context import Context
+from fanbase.deps import closure, dependencies, dependents, label, self_names
 from fanbase.manager import (
     Installed,
     all_installed,
@@ -72,6 +73,19 @@ def _install_requirements(results: list[Installed], args) -> None:
             if requirement not in installed:
                 installed.append(requirement)
                 print(f"installed requirement {requirement}")
+
+
+def _install_specs(pairs, root: Path | None = None) -> list[Installed]:
+    """Install specs and what they extend, each once, what is extended before what extends it."""
+    seen: set[tuple[str, str, str]] = set()
+    results = []
+    for reg, entry, ctx in pairs:
+        for dep_reg, dep_entry in closure(ctx, reg, entry):
+            key = (dep_reg.name, dep_entry.format, dep_entry.kind)
+            if key not in seen:
+                seen.add(key)
+                results.append(install(dep_reg, dep_entry, root))
+    return results
 
 
 def _list_installed(where: str | None) -> int:
@@ -134,20 +148,18 @@ def cmd_install(args, ctx: Context) -> int:
 
     if args.all:
         reg = ctx.registry(args.source)
-        entries = [e for fmt in reg.formats() for e in reg.kinds(fmt)]
-        results = [install(reg, e, root) for e in entries]
+        results = _install_specs(
+            [(reg, e, ctx) for fmt in reg.formats() for e in reg.kinds(fmt)], root
+        )
         for done in results:
             print(f"{_VERB[done.status]} {_clean(done)}")
         counts = Counter(_VERB[done.status] for done in results)
         summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
         print(f"{len(results)} specs: {summary} in {root}")
     else:
-        results = []
-        for ref in args.refs:
-            reg, entry = ctx.resolve(ref)
-            done = install(reg, entry, root)
+        results = _install_specs([(*ctx.resolve(ref), ctx) for ref in args.refs], root)
+        for done in results:
             _report(done, hint_requirements=args.no_requirements)
-            results.append(done)
     _warn_fandango(results)
     _install_requirements(results, args)
     return 0
@@ -167,19 +179,58 @@ def cmd_update(args, ctx: Context) -> int:
         if not pairs:
             print("nothing installed" if not all_installed() else "nothing to update")
             return 0
-    results = []
-    for reg, entry in pairs:
-        done = install(reg, entry)
+    results = _install_specs([(reg, entry, ctx) for reg, entry in pairs])
+    for done in results:
         _report(done, hint_requirements=args.no_requirements)
-        results.append(done)
     _warn_fandango(results)
     _install_requirements(results, args)
     return 0
 
 
 def cmd_uninstall(args, ctx: Context) -> int:
-    for done in uninstall(args.refs):
+    for done in uninstall(args.refs, force=args.force):
         print(f"removed {_clean(done)} ({done.path})")
+    return 0
+
+
+def _node(reg, entry) -> str:
+    version = entry.meta.get("version")
+    return _clean(label(reg, entry) + (f"  {version}" if version else ""))
+
+
+def cmd_deps(args, ctx: Context) -> int:
+    """What a spec extends, as a tree; with --reverse, what extends it."""
+    reg, entry = ctx.resolve(args.ref)
+
+    def forward(reg, entry):
+        for dep in dependencies(entry, reg.name, self_names(reg)):
+            try:
+                dep_reg = ctx.registry(dep.registry or None)
+                yield dep_reg, dep_reg.resolve(dep.ref), None
+            except RegistryError as exc:
+                yield None, None, f"{dep}  (cannot be found: {exc})"
+
+    def reverse(reg, entry):
+        for other, found in dependents(ctx, reg, entry):
+            yield other, found, None
+
+    children = reverse if args.reverse else forward
+
+    def walk(reg, entry, prefix: str, trail: tuple) -> None:
+        kids = list(children(reg, entry))
+        for i, (kid_reg, kid, problem) in enumerate(kids):
+            branch = "└── " if i == len(kids) - 1 else "├── "
+            if problem:
+                print(prefix + branch + _clean(problem))
+                continue
+            key = (kid_reg.name, kid.format, kid.kind)
+            circular = key in trail
+            print(prefix + branch + _node(kid_reg, kid) + ("  (circular)" if circular else ""))
+            if not circular:
+                walk(kid_reg, kid, prefix + ("    " if i == len(kids) - 1 else "│   "), (*trail, key))
+
+    print(_node(reg, entry))
+    walk(reg, entry, "", ((reg.name, entry.format, entry.kind),))
     return 0
 
 
@@ -372,7 +423,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("uninstall", help="remove installed specs")
     p.add_argument("refs", nargs="+", metavar="ref", help="e.g. png, png/png-apng, or acme:png-strict")
+    p.add_argument("--force", action="store_true", help="remove a spec even if an installed spec extends it")
     p.set_defaults(fn=cmd_uninstall)
+
+    p = sub.add_parser("deps", help="show what a spec extends, or with --reverse what extends it")
+    p.add_argument("ref", help="e.g. png-apng")
+    p.add_argument("--reverse", action="store_true", help="the specs that extend it, instead")
+    p.set_defaults(fn=cmd_deps)
 
     p = sub.add_parser("registry", help="the registries you use besides the default one")
     reg_sub = p.add_subparsers(dest="registry_command", required=True)

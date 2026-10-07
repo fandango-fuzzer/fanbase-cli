@@ -12,14 +12,18 @@ from __future__ import annotations
 import hashlib
 import re
 import sys
+from dataclasses import replace
 
 import yaml
+from packaging.version import InvalidVersion, Version
 
 from fanbase import __version__
+from fanbase.deps import check_registry_dependencies
 from fanbase.registry import (
     METADATA_FILENAME,
     Entry,
     Registry,
+    RegistryBase,
     RegistryError,
     check_registry_info,
     is_safe_name,
@@ -95,6 +99,11 @@ def _is_text(value: object) -> bool:
 def check_metadata(meta: dict) -> list[str]:
     """What is wrong with the optional keys of a spec's metadata, one line each."""
     problems = []
+    if "version" in meta:
+        try:
+            Version(meta["version"])
+        except (InvalidVersion, TypeError):
+            problems.append(f"version: {meta['version']!r} is not a version number; write it in quotes, like '1.0'")
     for key in ("license", "source", "derived_from"):
         if key in meta and not _is_text(meta[key]):
             problems.append(f"{key}: expected text")
@@ -128,6 +137,23 @@ def dump_metadata(meta: dict) -> str:
     return yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
 
 
+class _Planned(RegistryBase):
+    """The registry as it will be once reindexed: the specs with their refreshed metadata."""
+
+    def __init__(self, registry: Registry, planned: list) -> None:
+        self.info = registry.info
+        self._entries = [replace(entry, meta=meta) for _, entry, _, meta in planned]
+
+    def formats(self) -> list[str]:
+        return sorted({e.format for e in self._entries})
+
+    def kinds(self, fmt: str) -> list[Entry]:
+        return sorted((e for e in self._entries if e.format == fmt), key=lambda e: e.kind)
+
+    def read(self, entry: Entry) -> bytes:
+        raise NotImplementedError
+
+
 def reindex(registry: Registry, *, write: bool = True) -> tuple[list[dict], list[Entry], list[Entry]]:
     """Refresh every metadata.yml, then return the index rows.
 
@@ -148,6 +174,7 @@ def reindex(registry: Registry, *, write: bool = True) -> tuple[list[dict], list
             meta = refresh_metadata(entry, raw.decode("utf-8", errors="replace"))
             problems.extend(f"{entry}: {problem}" for problem in check_metadata(meta))
             planned.append((fmt, entry, raw, meta))
+    check_registry_dependencies(_Planned(registry, planned), problems)
     if problems:
         # Nothing has been written yet: a registry is not left half refreshed.
         raise RegistryError("invalid metadata:\n  " + "\n  ".join(problems))

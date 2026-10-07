@@ -109,6 +109,45 @@ committing changes to the registry. It needs a local checkout.
 `--check` changes nothing and exits with status 1 if anything is out of date, which makes
 it fit for CI.
 
+## Building on other specs
+
+A spec can build on another instead of copying it. It says so in its `metadata.yml`, includes the
+other spec, and redefines what it wants to change:
+
+```yaml
+# specs/png/png-apng/metadata.yml
+extends:
+  - png                # a spec of the same registry
+  - png>=1.0,<2        # ... in a version the range allows
+```
+
+```python
+# png-apng.fan
+include("png/png.fan")
+<image> ::= <apng_image>      # redefine what differs
+```
+
+Installing a spec installs what it extends first, so the `include()` finds its file: `fanbase install
+png-apng` puts `png` there too, and so does `fandango -F png-apng`. Cycles are refused.
+
+```bash
+fanbase deps png-ultra           # what it stands on, as a tree
+fanbase deps png --reverse       # what stands on png
+fanbase uninstall png            # refused while png-apng is installed (--force overrides)
+```
+
+A range can also be put on a ref, as a check: `fanbase install 'png>=1.2'` fails if the registry's
+`png` is older, and `png@1.2` means `png==1.2`. The registry has one version of each spec at a
+time; an older one is found by pointing `--registry` at an older release of it
+(`https://github.com/fandango-fuzzer/fanbase/tree/<tag>`).
+
+Which specs may extend which: a registry's specs extend specs of the same registry. The default
+registry's extend nothing else, so a release of it stands on its own. A registry you add can also
+extend the default one's, written `fanbase:png`; it cannot name a third registry, because the name a
+user gives a registry is the user's own. Inside a registry called `acme`, `acme:png-base` means its
+own `png-base`. `fanbase reindex` checks all of this (names, ranges, cycles) and writes nothing if
+something is wrong.
+
 ## Registries besides the public one
 
 The public registry is the default, and the only one a plain name such as `png` can ever
@@ -225,12 +264,13 @@ reference: https://www.w3.org/TR/png-3/
 | `fandango` | Fandango versions the spec is written for. Defaults to `>=1.3`; edit by hand. |
 | `requires` | Third-party Python packages the spec imports, found by scanning its `import` lines (standard library and Fandango excluded). Listed by import name. |
 | `pip` | Optional, written by hand. What to install for the spec, as pip requirements, when a package has a different name than its module: `requires: [yaml]` with `pip: [pyyaml>=6]`. Without it, the names in `requires` are taken to be package names. |
-| `version` | Version of the spec. Written by hand. |
+| `version` | Version of the spec, a version number such as `'1.0'` (in quotes). Written by hand; it is what a version range in `extends` or on a ref is compared with. |
 | `extensions` | File name extensions of the format; the first one is used for generated files. |
 | `authors` | Optional. Who wrote the spec: names, or `{name, orcid}`. |
 | `license` | Optional. SPDX identifier of the spec's license, e.g. `Apache-2.0`. |
 | `source` | Optional. What the spec was made from: a URL, or a few words. |
-| `extends`, `derived_from` | Optional. Specs this one builds on or was forked from, as refs (`png`, `png/png-apng`). Recorded and checked for shape; not acted on yet. |
+| `extends` | Optional. Specs this one builds on, as refs, each with an optional version range: `png`, `png>=1.0,<2`, `fanbase:png`. See [Building on other specs](#building-on-other-specs). |
+| `derived_from` | Optional. The spec this one was forked from, as a ref. Recorded and checked for shape. |
 | `status` | Optional. `draft`, `stable` or `deprecated`. |
 | `doi` | Optional. DOI of an archived copy, e.g. `10.5281/zenodo.1234567`. |
 

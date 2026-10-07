@@ -245,9 +245,34 @@ def all_installed(root: Path | None = None) -> list[Installed]:
     return sorted(found, key=lambda done: (done.registry, done.format, done.kind))
 
 
-def uninstall(refs: list[str], root: Path | None = None) -> list[Installed]:
+def _needed_by(found: list[Installed], root: Path) -> list[tuple[Installed, Installed]]:
+    """(spec, installed spec that extends it) for specs about to go that others still need."""
+    from fanbase.deps import dependencies, self_names  # noqa: F401  (deps imports the registry only)
+
+    going = {(done.registry, done.format, done.kind): done for done in found}
+    blocked = []
+    for other in all_installed(root):
+        if (other.registry, other.format, other.kind) in going:
+            continue
+        entry = Entry(other.format, other.kind, "", other.meta)
+        try:
+            deps = dependencies(entry, other.registry, {other.registry or "fanbase", other.registry})
+        except RegistryError:
+            continue
+        for dep in deps:
+            target = going.get((dep.registry, *_split_ref(dep.ref)[1:]))
+            if target is not None:
+                blocked.append((target, other))
+    return blocked
+
+
+def uninstall(refs: list[str], root: Path | None = None, force: bool = False) -> list[Installed]:
     """Remove installed specs, named as for `install`. Removes all of them, or, if one of
-    them is not installed, none. Only specs Fanbase installed are touched."""
+    them is not installed, none. Only specs Fanbase installed are touched.
+
+    A spec that another installed spec extends is not removed, unless `force`: the one that
+    extends it would stop working.
+    """
     root = root or install_root()
     have = {(done.registry, done.format, done.kind): done for done in all_installed(root)}
     found: list[Installed] = []
@@ -257,6 +282,9 @@ def uninstall(refs: list[str], root: Path | None = None) -> list[Installed]:
             raise RegistryError(f"{ref} is not installed by fanbase under {root}")
         if done not in found:
             found.append(done)
+    if not force and (blocked := _needed_by(found, root)):
+        needs = "; ".join(f"{spec} is extended by {other}" for spec, other in blocked)
+        raise RegistryError(f"{needs}. Remove that one too, or use --force")
     for done in found:
         done.path.unlink(missing_ok=True)
         _meta_path(done.path).unlink(missing_ok=True)
@@ -372,6 +400,13 @@ def ensure_requirements(done: Installed) -> list[str]:
     return missing
 
 
+def install_closure(ctx, reg: RegistryBase, entry: Entry, root: Path | None = None) -> list[Installed]:
+    """Install a spec and the specs it extends; what it extends comes first, the spec last."""
+    from fanbase.deps import closure
+
+    return [install(r, e, root) for r, e in closure(ctx, reg, entry)]
+
+
 def ensure(
     ref: str,
     reg: RegistryBase | None = None,
@@ -379,14 +414,15 @@ def ensure(
     requirements: bool = True,
     ctx=None,
 ) -> Installed:
-    """The spec `ref`, installed and current, with the Python packages it needs.
-    This is what `fandango -F` calls.
+    """The spec `ref`, installed and current, with the Python packages it needs and the
+    specs it extends. This is what `fandango -F` calls.
 
-    `ref` may name a registry the user added (`acme:png-strict`), or be pinned to one.
+    `ref` may name a registry the user added (`acme:png-strict`), be pinned to one, or carry
+    a version range (`png>=1.2`).
 
     If the registry cannot be reached but the spec is already installed, the installed
     copy is used (status "offline"), so a fuzzing run does not depend on the network.
-    Packages the spec needs are installed if they are missing, unless `requirements` is
+    Packages the specs need are installed if they are missing, unless `requirements` is
     False.
     """
     root = root or install_root()
@@ -396,13 +432,18 @@ def ensure(
         ctx = Context(default=reg)
     try:
         registry, entry = ctx.resolve(ref)
-        done = install(registry, entry, root)
+        installed = install_closure(ctx, registry, entry, root)
     except RegistryUnavailable:
         done = installed_copy(ctx.pinned(ref), root)
         if done is None:
             raise
-    if problem := done.fandango_mismatch:
-        LOG.warning("Fanbase: %s %s", done, problem)
-    if requirements:
-        ensure_requirements(done)
-    return done
+        from fanbase.deps import check_version, split_constraint
+
+        check_version(str(done), done.meta, split_constraint(ref)[1], ref.strip())
+        installed = [done]
+    for each in installed:
+        if problem := each.fandango_mismatch:
+            LOG.warning("Fanbase: %s %s", each, problem)
+        if requirements:
+            ensure_requirements(each)
+    return installed[-1]

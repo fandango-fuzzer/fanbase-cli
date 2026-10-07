@@ -67,15 +67,19 @@ class Entry:
 _PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9-]*):(.*)", re.DOTALL)
 
 
-def split_registry(ref: str) -> tuple[str | None, str]:
-    """`acme:png/png-strict` -> (acme, png/png-strict); `png` -> (None, png).
-
-    `fanbase:png` names the default registry explicitly and is returned as (None, png).
-    """
+def split_prefix(ref: str) -> tuple[str | None, str]:
+    """`acme:png/png-strict` -> (acme, png/png-strict); `fanbase:png` -> (fanbase, png);
+    `png` -> (None, png). Says what was written, without reading anything into it."""
     m = _PREFIX.fullmatch(ref.strip())
     if not m:
         return None, ref.strip()
-    name, rest = m.group(1), m.group(2)
+    return m.group(1), m.group(2)
+
+
+def split_registry(ref: str) -> tuple[str | None, str]:
+    """Like `split_prefix`, but `fanbase:png` is the default registry, which is also what a
+    ref with no prefix means: both come back as (None, png)."""
+    name, rest = split_prefix(ref)
     return (None if name == DEFAULT_REGISTRY_NAME else name), rest
 
 
