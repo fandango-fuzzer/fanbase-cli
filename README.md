@@ -109,6 +109,38 @@ committing changes to the registry. It needs a local checkout.
 `--check` changes nothing and exits with status 1 if anything is out of date, which makes
 it fit for CI.
 
+## Repeating a run: `fanbase.lock`
+
+Registries change every week. To fuzz with exactly the specs you used last time, lock them:
+
+```bash
+fanbase lock png png-apng       # writes fanbase.lock: these two, what they extend, and a hash of each
+git add fanbase.lock            # commit it with the project
+
+fanbase install --locked        # installs exactly those, or nothing if a registry has them differently
+fanbase install --locked --into .fanbase     # into the project instead of the shared install directory
+fanbase lock --check            # for CI: exit 1 if the registries have moved on from the lock
+fanbase lock                    # on purpose: bring the lock up to what the registries have now
+```
+
+With a `fanbase.lock` in the current directory (or the file `$FANBASE_LOCK` names), `fandango -F png`
+holds the run to it as well: if `png` is not exactly what the lock says, the run stops and says so,
+instead of quietly using a newer one. The specs it extends are held to the lock too. Without
+the registry, the installed copy is used, but only if it is the locked one. A spec that is not in the lock
+is used as usual, with a warning.
+
+A lock holds hashes, not copies. Once a spec has changed in the registry, the locked version can
+only be fetched from an older release of the registry, so the lock records where the registry was
+read from. **Lock against a release, not against `main`**, which `fanbase lock` warns about:
+
+```bash
+fanbase --registry https://github.com/fandango-fuzzer/fanbase/tree/<tag> lock png
+```
+
+The lock reads the public registry from where it was locked, unless you pass `--registry` or set
+`$FANBASE_REGISTRY`. A registry you added has to be added on your machine; the lock says where it came from and
+`fanbase install --locked` tells you what to run if it is missing.
+
 ## Building on other specs
 
 A spec can build on another instead of copying it. It says so in its `metadata.yml`, includes the

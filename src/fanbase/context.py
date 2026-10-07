@@ -12,6 +12,7 @@ ref means to them (`fanbase pin png acme:png/png-strict`).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fanbase.config import Config, RegistryConfig, load_config
@@ -23,7 +24,7 @@ from fanbase.registry import (
     split_registry,
 )
 from fanbase.remote import RemoteRegistry
-from fanbase.source import find_registry
+from fanbase.source import ENV_REGISTRY, find_registry
 
 def open_configured(reg: RegistryConfig) -> RegistryBase:
     """A registry the user added: a URL, or a path to a local checkout."""
@@ -56,6 +57,15 @@ class Context:
         self._local = local
         self.config = config if config is not None else load_config()
         self._named: dict[str, RegistryBase] = {}
+
+    @property
+    def default_is_explicit(self) -> bool:
+        """Did the user say which registry is the default (a flag, or $FANBASE_REGISTRY)?"""
+        return bool(self._default is not None or self._explicit or os.environ.get(ENV_REGISTRY))
+
+    def use_default(self, reg: RegistryBase) -> RegistryBase:
+        self._default = reg
+        return reg
 
     @property
     def default(self) -> RegistryBase:

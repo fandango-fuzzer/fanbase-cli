@@ -150,7 +150,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def _entry_sha(reg: RegistryBase, entry: Entry) -> str:
+def entry_sha(reg: RegistryBase, entry: Entry) -> str:
     """The hash of the registry's copy; from the index when it has one, else by reading."""
     return entry.sha256 or _sha256(reg.read(entry))
 
@@ -175,7 +175,7 @@ def install(reg: RegistryBase, entry: Entry, root: Path | None = None) -> Instal
     meta_file = _meta_path(target)
 
     local = target.read_bytes() if target.is_file() else None
-    if local is not None and _sha256(local) == _entry_sha(reg, entry):
+    if local is not None and _sha256(local) == entry_sha(reg, entry):
         status = "current"
         raw = local
     else:
@@ -400,11 +400,20 @@ def ensure_requirements(done: Installed) -> list[str]:
     return missing
 
 
-def install_closure(ctx, reg: RegistryBase, entry: Entry, root: Path | None = None) -> list[Installed]:
-    """Install a spec and the specs it extends; what it extends comes first, the spec last."""
+def install_closure(ctx, reg: RegistryBase, entry: Entry, root: Path | None = None, lock=None) -> list[Installed]:
+    """Install a spec and the specs it extends; what it extends comes first, the spec last.
+
+    With a lock, every one of them has to be what the lock says before any is installed.
+    """
     from fanbase.deps import closure
 
-    return [install(r, e, root) for r, e in closure(ctx, reg, entry)]
+    plan = closure(ctx, reg, entry)
+    if lock is not None:
+        from fanbase.locking import check_locked
+
+        for r, e in plan:
+            check_locked(lock, r, e)
+    return [install(r, e, root) for r, e in plan]
 
 
 def ensure(
@@ -413,6 +422,7 @@ def ensure(
     root: Path | None = None,
     requirements: bool = True,
     ctx=None,
+    lock=None,
 ) -> Installed:
     """The spec `ref`, installed and current, with the Python packages it needs and the
     specs it extends. This is what `fandango -F` calls.
@@ -420,19 +430,32 @@ def ensure(
     `ref` may name a registry the user added (`acme:png-strict`), be pinned to one, or carry
     a version range (`png>=1.2`).
 
+    If there is a lock (`fanbase.lock` in the current directory, or the file $FANBASE_LOCK
+    names) that has the spec, the spec has to be exactly what the lock says, or this raises:
+    a run that was locked is not silently run with a newer spec.
+
     If the registry cannot be reached but the spec is already installed, the installed
     copy is used (status "offline"), so a fuzzing run does not depend on the network.
     Packages the specs need are installed if they are missing, unless `requirements` is
     False.
     """
+    from fanbase.lock import load_lock, lock_path
+    from fanbase.locking import check_installed_locked, warn_if_unlocked
+
     root = root or install_root()
     if ctx is None:
         from fanbase.context import Context
 
+        if lock is None and (path := lock_path()):
+            lock = load_lock(path)
         ctx = Context(default=reg)
+        if lock is not None:
+            ctx = lock_context(lock, reg)
     try:
         registry, entry = ctx.resolve(ref)
-        installed = install_closure(ctx, registry, entry, root)
+        installed = install_closure(ctx, registry, entry, root, lock)
+        if lock is not None:
+            warn_if_unlocked(lock, installed)
     except RegistryUnavailable:
         done = installed_copy(ctx.pinned(ref), root)
         if done is None:
@@ -440,6 +463,8 @@ def ensure(
         from fanbase.deps import check_version, split_constraint
 
         check_version(str(done), done.meta, split_constraint(ref)[1], ref.strip())
+        if lock is not None:
+            check_installed_locked(lock, done)
         installed = [done]
     for each in installed:
         if problem := each.fandango_mismatch:
@@ -447,3 +472,15 @@ def ensure(
         if requirements:
             ensure_requirements(each)
     return installed[-1]
+
+
+def lock_context(lock, reg: RegistryBase | None):
+    """A context that reads the default registry from where the lock says, unless the user
+    said otherwise (a registry that is open already, or $FANBASE_REGISTRY)."""
+    from fanbase.context import Context
+    from fanbase.source import ENV_REGISTRY, is_official
+
+    url = lock.registries.get("")
+    if reg is None and url and not os.environ.get(ENV_REGISTRY) and is_official(url):
+        return Context(explicit=url)
+    return Context(default=reg)

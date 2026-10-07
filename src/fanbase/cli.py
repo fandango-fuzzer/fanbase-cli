@@ -25,15 +25,18 @@ from fanbase.manager import (
     all_installed,
     declared_requirements,
     ensure_requirements,
+    entry_sha,
     install,
     install_root,
     spec_path,
     uninstall,
 )
+from fanbase.lock import LOCK_FILENAME, load_lock, lock_path, save_lock
+from fanbase.locking import build_lock, check_locked, compare, locked_registry
 from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
 from fanbase.registry import Registry, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
-from fanbase.source import locate_registry
+from fanbase.source import locate_registry, moves
 
 _VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
 
@@ -139,7 +142,85 @@ def cmd_show(args, ctx: Context) -> int:
     return 0
 
 
+def _install_locked(args, ctx: Context) -> int:
+    """Install exactly what the lock says; install nothing if a registry has it any other way."""
+    if args.refs or args.all or args.source:
+        raise RegistryError("--locked installs what the lock says; name no specs")
+    path = lock_path(args.lockfile)
+    if path is None:
+        raise RegistryError(f"no {LOCK_FILENAME} here; `fanbase lock SPEC...` makes one")
+    lock = load_lock(path)
+    registries = {name: locked_registry(ctx, lock, name) for name in sorted({s.registry for s in lock.specs})}
+    plan, problems = [], []
+    for spec in lock.specs:
+        reg = registries[spec.registry]
+        try:
+            entry = reg.resolve(f"{spec.format}/{spec.kind}")
+        except RegistryError as exc:
+            problems.append(f"{spec}: {exc}")
+            continue
+        try:
+            check_locked(lock, reg, entry, hint=False)
+        except RegistryError as exc:
+            problems.append(str(exc))
+            continue
+        plan.append((reg, entry))
+    if problems:
+        raise RegistryError(
+            f"the registries no longer match {path}:\n  " + "\n  ".join(problems)
+            + "\nread an older release of the registry, or update the lock with `fanbase lock`"
+        )
+    root = Path(args.into) if args.into else install_root()
+    results = [install(reg, entry, root) for reg, entry in plan]
+    for done in results:
+        print(f"{_VERB[done.status]} {_clean(done)}")
+    counts = Counter(_VERB[done.status] for done in results)
+    summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
+    print(f"{len(results)} specs from {path}: {summary} in {root}")
+    _warn_fandango(results)
+    _install_requirements(results, args)
+    return 0
+
+
+def cmd_lock(args, ctx: Context) -> int:
+    path = Path(args.lockfile) if args.lockfile else Path(LOCK_FILENAME)
+    existing = load_lock(path) if path.is_file() else None
+    refs = args.refs or ([str(spec) for spec in existing.requested] if existing else [])
+    if not refs:
+        raise RegistryError("name the specs to lock, e.g. `fanbase lock png`")
+    fresh = build_lock(ctx, refs)
+
+    if args.check:
+        if existing is None:
+            raise RegistryError(f"{path} does not exist; `fanbase lock {' '.join(refs)}` makes it")
+        changes = compare(existing, fresh)
+        if changes:
+            print(f"{path} is out of date:")
+            print("\n".join(changes))
+            print("run `fanbase lock` to update it")
+            return 1
+        print(f"{path} is up to date")
+        return 0
+
+    save_lock(fresh, path)
+    print(f"locked {len(fresh.specs)} specs in {path}")
+    if existing is not None:
+        for line in compare(existing, fresh):
+            print(line)
+    for name, where in sorted(fresh.registries.items()):
+        if moves(where):
+            print(
+                f"warning: the registry {name or 'fanbase'} was read from {_clean(where)}, which changes over time: "
+                "once a spec changes there, the locked one can no longer be fetched. Lock against a release "
+                "instead: --registry https://github.com/fandango-fuzzer/fanbase/tree/<tag>",
+                file=sys.stderr,
+            )
+    return 0
+
+
 def cmd_install(args, ctx: Context) -> int:
+    if args.locked:
+        return _install_locked(args, ctx)
     if args.all == bool(args.refs):
         raise RegistryError("name the specs to install, or give --all (not both)")
     if args.source and not args.all:
@@ -413,7 +494,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from", dest="source", metavar="NAME", help="with --all: a registry you added, instead of the default")
     p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs need")
     p.add_argument("--into", help="install directory (default: Fandango's data dir)")
+    p.add_argument("--locked", action="store_true", help=f"install exactly what {LOCK_FILENAME} says, or nothing")
+    p.add_argument("--lockfile", metavar="FILE", help=f"the lock to use (default: $FANBASE_LOCK, else ./{LOCK_FILENAME})")
     p.set_defaults(fn=cmd_install)
+
+    p = sub.add_parser("lock", help=f"write {LOCK_FILENAME}: exactly which specs this project uses")
+    p.add_argument("refs", nargs="*", metavar="ref", help="the specs to lock (default: those already in the lock)")
+    p.add_argument("--lockfile", metavar="FILE", help=f"where to write it (default: ./{LOCK_FILENAME})")
+    p.add_argument("--check", action="store_true", help="only say whether the lock is still what the registries have; exit 1 if not")
+    p.set_defaults(fn=cmd_lock)
 
     p = sub.add_parser("update", help="bring installed specs up to date")
     p.add_argument("refs", nargs="*", metavar="ref", help="specs to update (default: all installed)")

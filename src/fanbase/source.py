@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fanbase.manifest import INDEX_FILENAME
 from fanbase.registry import Registry, RegistryBase, RegistryError
@@ -14,6 +15,32 @@ ENV_REGISTRY = "FANBASE_REGISTRY"
 
 # Used when nothing else is given or found: the public registry.
 DEFAULT_REGISTRY = "https://github.com/fandango-fuzzer/fanbase"
+
+
+def is_official(url: str) -> bool:
+    """Is this the public registry, at any ref (`.../tree/<tag>`)?"""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.netloc != "github.com":
+        return False
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if len(segments) < 2:
+        return False
+    official = [seg.lower() for seg in urlsplit(DEFAULT_REGISTRY).path.split("/") if seg]
+    return [segments[0].lower(), segments[1].removesuffix(".git").lower()] == official
+
+
+def moves(url: str) -> bool:
+    """Does reading this registry give different answers over time? A branch does; a tag or a
+    commit does not, as far as the URL tells."""
+    parts = urlsplit(url)
+    if parts.netloc != "github.com":
+        return True  # a local path, or a host we know nothing about
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if len(segments) >= 4 and segments[2] == "tree":
+        ref = "/".join(segments[3:])
+        looks_like_a_commit = len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref.lower())
+        return not looks_like_a_commit and ref in ("main", "master", "dev", "develop", "HEAD")
+    return True
 
 
 @dataclass(frozen=True)
