@@ -136,7 +136,7 @@ def cmd_new(args, ctx: Context) -> int:
     meta: dict = {"description": args.description or "", "version": "0.1", "status": "draft"}
     if user := git_user():
         meta["authors"] = [user]
-    if extensions:
+    if extensions and not reg.format_info(fmt).get("extensions"):  # the format may already say
         meta["extensions"] = list(extensions)
     if args.extends:
         meta["extends"] = list(args.extends)

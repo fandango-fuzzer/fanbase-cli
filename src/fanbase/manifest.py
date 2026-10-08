@@ -20,7 +20,9 @@ from packaging.version import InvalidVersion, Version
 from fanbase import __version__
 from fanbase.deps import check_registry_dependencies
 from fanbase.registry import (
+    FORMAT_FILENAME,
     METADATA_FILENAME,
+    TARGETS_DIRNAME,
     Entry,
     Registry,
     RegistryBase,
@@ -54,8 +56,12 @@ KEY_ORDER = ("format", "kind", "description", "fanbase", "fandango", "requires")
 #   derived_sha256  the hash of that spec's file when it was forked: what `rebase` merges from
 #   status        draft, stable or deprecated
 #   doi           the DOI of an archived copy (Zenodo)
-OPTIONAL_KEYS = ("authors", "license", "source", "extends", "derived_from", "derived_sha256", "status", "doi")
+#   decodes       how often its files are meant to be accepted by a parser: always, mostly, rarely or never
+#   targets       the targets to evaluate it against, instead of its format's
+OPTIONAL_KEYS = ("authors", "license", "source", "extends", "derived_from", "derived_sha256", "status", "doi",
+                 "decodes", "targets")
 STATUSES = ("draft", "stable", "deprecated")
+DECODES = ("always", "mostly", "rarely", "never")
 
 _ORCID = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
 _DOI = re.compile(r"10\.\d{4,9}/\S+")
@@ -82,7 +88,7 @@ def detect_requires(source: str) -> list[str]:
 
 def refresh_metadata(entry: Entry, source: str) -> dict:
     """The entry's metadata with the derived fields brought up to date."""
-    meta = dict(entry.meta)
+    meta = dict(entry.own if entry.own is not None else entry.meta)
     meta.update(format=entry.format, kind=entry.kind, fanbase=__version__,
                 requires=detect_requires(source))
     meta.setdefault("description", "")
@@ -112,6 +118,12 @@ def check_metadata(meta: dict) -> list[str]:
         isinstance(meta["derived_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", meta["derived_sha256"])
     ):
         problems.append("derived_sha256: expected the 64 hex digits of a SHA-256")
+    if "decodes" in meta and meta["decodes"] not in DECODES:
+        problems.append(f"decodes: {meta['decodes']!r} is not one of {', '.join(DECODES)}")
+    if "targets" in meta and not (
+        isinstance(meta["targets"], list) and all(is_safe_name(t) for t in meta["targets"])
+    ):
+        problems.append("targets: expected a list of target names")
     if "status" in meta and meta["status"] not in STATUSES:
         problems.append(f"status: {meta['status']!r} is not one of {', '.join(STATUSES)}")
     if "doi" in meta and not (isinstance(meta["doi"], str) and _DOI.fullmatch(meta["doi"])):
@@ -140,6 +152,22 @@ def check_metadata(meta: dict) -> list[str]:
 
 def dump_metadata(meta: dict) -> str:
     return yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
+
+
+def _unknown_targets(registry: Registry, planned: list) -> list[str]:
+    """Where format.yml or a spec names a target that the registry does not define."""
+    folder = registry.root / TARGETS_DIRNAME
+    known = {d.name for d in folder.iterdir() if (d / "target.yml").is_file()} if folder.is_dir() else set()
+    problems = []
+    for fmt in registry.formats():
+        missing = [t for t in registry.format_info(fmt).get("targets", []) if t not in known]
+        if missing:
+            problems.append(f"{fmt}/{FORMAT_FILENAME}: targets {', '.join(missing)} not defined in {TARGETS_DIRNAME}/")
+    for _, entry, _, meta in planned:
+        missing = [t for t in meta.get("targets", []) if isinstance(t, str) and t not in known]
+        if missing:
+            problems.append(f"{entry}: targets {', '.join(missing)} not defined in {TARGETS_DIRNAME}/")
+    return problems
 
 
 class _Planned(RegistryBase):
@@ -180,6 +208,7 @@ def reindex(registry: Registry, *, write: bool = True) -> tuple[list[dict], list
             problems.extend(f"{entry}: {problem}" for problem in check_metadata(meta))
             planned.append((fmt, entry, raw, meta))
     check_registry_dependencies(_Planned(registry, planned), problems)
+    problems.extend(_unknown_targets(registry, planned))
     if problems:
         # Nothing has been written yet: a registry is not left half refreshed.
         raise RegistryError("invalid metadata:\n  " + "\n  ".join(problems))
@@ -198,9 +227,12 @@ def reindex(registry: Registry, *, write: bool = True) -> tuple[list[dict], list
         if not meta["description"]:
             undescribed.append(entry)
 
+        # The index says everything that is true of the spec, its format's too, so that a client
+        # (an older one as well) needs nothing but the index.
+        shared = {k: v for k, v in registry.format_info(fmt).items() if k not in meta}
         rows.append({"format": fmt, "kind": entry.kind, "path": entry.path,
                      "sha256": hashlib.sha256(raw).hexdigest(),
-                     **{k: v for k, v in meta.items() if k not in ("format", "kind")}})
+                     **{k: v for k, v in meta.items() if k not in ("format", "kind")}, **shared})
     return rows, changed, undescribed
 
 

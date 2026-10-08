@@ -337,6 +337,22 @@ newer schema than it knows says so and asks you to upgrade `fanbase`.
 An installed spec is `<install dir>/<format>/<kind>.fan`, with a copy of its metadata next
 to it as `<kind>.yml`.
 
+### `format.yml`
+
+What is true of a format, whichever of its specs is meant, can be said once, in `specs/<format>/format.yml`:
+
+```yaml
+title: Portable Network Graphics
+mime: image/png
+extensions: [png]
+reference: https://www.w3.org/TR/png-3/
+targets: [pillow, imagemagick]     # what files of this format are evaluated against; see below
+```
+
+A spec has all of it, and what its own `metadata.yml` says wins. `reindex` does not copy the format's words into
+every `metadata.yml`, but the index and what is installed say them for each spec, so a client needs nothing else.
+A target named here or in a spec has to be defined in the registry's `targets/`.
+
 ### `metadata.yml`
 
 ```yaml
@@ -370,6 +386,8 @@ reference: https://www.w3.org/TR/png-3/
 | `extends` | Optional. Specs this one builds on, as refs, each with an optional version range: `png`, `png>=1.0,<2`, `fanbase:png`. See [Building on other specs](#building-on-other-specs). |
 | `derived_from` | Optional. The spec this one was forked from, as a ref. Recorded and checked for shape. |
 | `status` | Optional. `draft`, `stable` or `deprecated`. |
+| `decodes` | Optional. How often its files are meant to be accepted by a parser: `always`, `mostly`, `rarely` or `never`. Many specs exist to produce files that do not decode, and `evaluate` reports against this. |
+| `targets` | Optional. The targets to evaluate it against, instead of its format's. |
 | `doi` | Optional. DOI of an archived copy, e.g. `10.5281/zenodo.1234567`. |
 
 All the optional keys are written by hand and kept in this order after the generated keys;

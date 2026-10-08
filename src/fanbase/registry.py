@@ -30,6 +30,14 @@ REGISTRY_FILENAME = "registry.yml"
 REGISTRY_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
+# Optional, in a format's folder: what is true of the format whichever spec is meant (its name, file
+# name extensions, media type, specification) and which targets judge its files. A spec's own
+# metadata.yml wins over it.
+FORMAT_FILENAME = "format.yml"
+
+# Where a registry keeps the targets that its specs are evaluated against.
+TARGETS_DIRNAME = "targets"
+
 # The registry the client is configured with by default, which is addressed as `fanbase:`.
 DEFAULT_REGISTRY_NAME = "fanbase"
 
@@ -53,8 +61,9 @@ class Entry:
     format: str
     kind: str
     path: str  # posix path to the .fan file, relative to the registry root
-    meta: dict = field(default_factory=dict, compare=False)
+    meta: dict = field(default_factory=dict, compare=False)  # what is true of the spec: its own words, and its format's
     sha256: str = ""  # only known when the entry came from index.yml
+    own: dict | None = field(default=None, compare=False)  # the spec's metadata.yml alone, where it was read from one
 
     def __str__(self) -> str:
         return f"{self.format}/{self.kind}"
@@ -159,7 +168,13 @@ class Registry(RegistryBase):
     def entry(self, fmt: str, kind: str) -> Entry:
         folder = self.specs_dir / fmt / kind
         path = (folder / f"{kind}.fan").relative_to(self.root).as_posix()
-        return Entry(fmt, kind, path, read_metadata(folder / METADATA_FILENAME))
+        own = read_metadata(folder / METADATA_FILENAME)
+        return Entry(fmt, kind, path, {**self.format_info(fmt), **own}, own=own)
+
+    def format_info(self, fmt: str) -> dict:
+        """The format.yml of a format; empty if it has none."""
+        path = self.specs_dir / fmt / FORMAT_FILENAME
+        return check_format_info(read_metadata(path), str(path))
 
     def read(self, entry: Entry) -> bytes:
         return (self.root / entry.path).read_bytes()
@@ -209,3 +224,21 @@ def read_registry_info(path: Path) -> dict:
     except yaml.YAMLError as exc:
         raise RegistryError(f"{path}: invalid YAML: {exc}") from None
     return check_registry_info(data, str(path))
+
+
+def check_format_info(info: dict, where: str) -> dict:
+    """A format.yml: texts for title, mime and reference, file name extensions, and the names of targets."""
+    for key in ("title", "mime", "reference"):
+        if key in info and not (isinstance(info[key], str) and info[key].strip()):
+            raise RegistryError(f"{where}: {key} has to be text")
+    extensions = info.get("extensions")
+    if extensions is not None and not (
+        isinstance(extensions, list) and extensions and all(isinstance(e, str) and e.strip() for e in extensions)
+    ):
+        raise RegistryError(f"{where}: extensions has to be a list of file name extensions")
+    targets = info.get("targets")
+    if targets is not None and not (
+        isinstance(targets, list) and all(is_safe_name(t) for t in targets) and len(set(targets)) == len(targets)
+    ):
+        raise RegistryError(f"{where}: targets has to be a list of target names, each once")
+    return info
