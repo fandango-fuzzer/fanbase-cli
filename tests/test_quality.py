@@ -58,6 +58,13 @@ def test_a_report_becomes_quality_results():
     assert row["best_accepted"] == 1.0 and row["decodes"] == "always" and row["expectation_met"] is True
 
 
+def test_a_curve_that_is_not_one_is_cut_down_to_what_is():
+    doc = quality.build([report(coverage=COVERAGE)])
+    doc["specs"]["png/png"]["coverage"]["pillow"] = {"curve": [[1, 0.1], [2], ["x", 0.5], [3, 7], [4, 0.4]] + [[n, 0.5] for n in range(30)]}
+    read = quality.parse(json.dumps(doc))["specs"]["png/png"]["coverage"]["pillow"]["curve"]
+    assert read[:2] == [[1, 0.1], [4, 0.4]] and len(read) <= 20
+
+
 def test_the_best_parser_decides_and_the_expectation_is_checked():
     first = report(accepted=40, name="pillow")
     second = report(accepted=100, name="ffmpeg")
@@ -73,7 +80,8 @@ def test_a_run_of_the_parsers_and_a_run_of_the_coverage_are_one_document():
     row = doc["specs"]["png/png"]
     assert set(row["targets"]) == {"pillow", "libpng-cov"}
     assert row["coverage"]["libpng-cov"] == {"version": "libpng 1.6.59", "lines": 0.225, "branches": 0.18, "seeds_lines": 0.1625,
-                                             "only_generated": 700, "only_seeds": 200, "lines_total": 8000, "inputs": 100}
+                                             "only_generated": 700, "only_seeds": 200, "lines_total": 8000, "inputs": 100,
+                                             "curve": [[1, 0.15], [100, 0.225]]}
 
 
 def test_results_for_another_version_of_a_spec_replace_the_old_ones():

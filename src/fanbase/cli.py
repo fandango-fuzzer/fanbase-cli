@@ -46,6 +46,7 @@ from fanbase.quality import cmd_quality_build, for_registry, of as quality_of, s
 from fanbase.rebase import cmd_rebase
 from fanbase.registry import Registry, RegistryBase, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
+from fanbase.site import cmd_site
 from fanbase.source import locate_registry, moves
 
 _VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
@@ -712,6 +713,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="do not ask first")
     p.add_argument("--api", metavar="URL", help="another Zenodo (https, or this machine), for tests")
     p.set_defaults(fn=cmd_doi, local=True)
+
+    p = sub.add_parser("site", help="make a site to browse the registry checkout: its formats and specs, how well they do, how to cite them")
+    p.add_argument("output", metavar="DIR", help="where to write it: a folder that is new, empty, or made by this before")
+    p.add_argument("--quality", nargs="?", const="auto", metavar="FILE|URL", help="also show how well each spec does, from the registry's results or from FILE or URL")
+    p.add_argument("--repo", metavar="URL", help="the registry's repository, for links to the specs there (default: the public registry's, for a registry that has no name)")
+    p.add_argument("--title", help="the site's name (default: Fanbase)")
+    p.set_defaults(fn=cmd_site, local=True)
 
     p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
     p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")

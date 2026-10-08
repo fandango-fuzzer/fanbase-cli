@@ -392,6 +392,25 @@ and it is only a note. A parser that accepts five points fewer of a spec's files
 lines, is worse; Fandango's speed is only told when it moves by half or double, since it is the machine's as much as
 the spec's. `--fail-on-worse` makes it an exit status. Nothing to compare with (the first run) is only said.
 
+### A site to browse the registry: `fanbase site`
+
+```bash
+fanbase site site/ --quality                 # in a registry checkout: pages for the registry, each format and each spec
+fanbase site site/ --quality results.json --title "Acme specs" --repo https://github.com/acme/specs
+```
+
+A page for the registry (every spec, with a filter by words, format and status), one for each format, and one for each spec:
+what it is and who made it, what it extends and what extends it, how to install and use it, how well it does (with
+`--quality`: how much of its files each parser accepts, how much of a library they reach, with a picture of how that grows
+with the number of files, and how fast they are made), how to cite it, and its source. `index.json` has the same for
+machines. It is plain files, to put anywhere (GitHub Pages, for one); the registry's `site.yml` does that.
+
+The metadata of a spec comes from pull requests, so nothing in it is trusted: every text is cleaned and escaped, a link is
+only made to an http(s) address, and each page says in a Content-Security-Policy that it takes nothing from anywhere else
+(the style and the filter are two files of the site's own). Nothing is run: a spec is read, never executed. The same registry
+and results give the same files, byte for byte, because nothing is dated. The folder is replaced each time it is made, and
+only if it is new, empty, or made by this before.
+
 ### A DOI for a spec: `fanbase doi`
 
 A DOI makes a spec citable as it was: [Zenodo](https://zenodo.org) keeps the spec's `.fan` and `metadata.yml`, and the DOI

@@ -299,3 +299,14 @@ def test_with_enough_time_nothing_is_skipped(tmp_path):
     files = [sample(tmp_path, b"x", f"f{i}.bin") for i in range(6)]
     result = run_target(target, files, budget=60)
     assert (result.total, result.skipped) == (6, 0)
+
+
+@pytest.mark.parametrize("said, version", [
+    ("ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026 the FFmpeg developers", "ffmpeg version 7.1.5-0+deb13u1"),
+    ("Version: ImageMagick 7.1.1-43 Q16 aarch64 22550 https://imagemagick.org", "Version: ImageMagick 7.1.1-43 Q16 aarch64 22550"),
+    ("libpng 1.6.59", "libpng 1.6.59"),
+    ("12.3.0", "12.3.0"),
+])
+def test_a_version_is_the_version_and_not_the_notice_after_it(tmp_path, said, version):
+    target = targets.Target("t", tmp_path, "T", ("png",), ("run",), version=(sys.executable, "-c", f"print({said!r})"))
+    assert targets.version_of(target) == version

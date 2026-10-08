@@ -260,7 +260,11 @@ def version_of(target: Target) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     lines = (done.stdout or done.stderr).strip().splitlines()
-    return clean(lines[0].strip())[:60] if done.returncode == 0 and lines else None
+    if done.returncode != 0 or not lines:
+        return None
+    # the first line, without the notice that tools tend to add to their version ("... Copyright (c) 2000-2026 ...")
+    first = re.split(r"\s+(?:Copyright\b|\(c\)|https?://)", clean(lines[0].strip()), maxsplit=1)[0]
+    return first[:60]
 
 
 # --- judging one file

@@ -9,7 +9,8 @@ reach, and how fast it makes them.
                            "decodes": "always", "best_accepted": 1.0, "expectation_met": true,
                            "targets":  {"pillow": {"version": "12.3.0", "accepted": 1.0, "files": 100}},
                            "coverage": {"libpng-cov": {"version": "libpng 1.6.59", "lines": 0.225, "branches": 0.169,
-                                                       "seeds_lines": 0.161, "only_generated": 728, "only_seeds": 210}}}}}
+                                                       "seeds_lines": 0.161, "only_generated": 728, "only_seeds": 210,
+                                                       "curve": [[1, 0.149], [10, 0.204], [100, 0.225]]}}}}}
 
 It is made from evaluation reports (`fanbase quality build`), published with a registry's release, and read by
 `fanbase list --quality` and `show --quality`, and by `evaluate --compare-with`, which says what changed since.
@@ -45,6 +46,15 @@ def _ratio(value: object) -> float | None:
 
 def _count(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _curve(value: object) -> list[list]:
+    """[[inputs, share of lines], ...] as far as it is that."""
+    out = []
+    for point in value[:20] if isinstance(value, list) else []:
+        if isinstance(point, list) and len(point) == 2 and _count(point[0]) is not None and _ratio(point[1]) is not None:
+            out.append([point[0], _ratio(point[1])])
+    return out
 
 
 def _text(value: object, limit: int = 80) -> str | None:
@@ -90,7 +100,9 @@ def build(reports: list[dict], previous: dict | None = None) -> dict:
                         "version": target.get("version"), "lines": last.get("lines_share"), "branches": last.get("branches_share"),
                         "seeds_lines": (coverage.get("seeds") or {}).get("lines_share"),
                         "only_generated": coverage.get("only_generated_lines"), "only_seeds": coverage.get("only_seed_lines"),
-                        "lines_total": coverage.get("lines_total"), "inputs": last.get("inputs")}
+                        "lines_total": coverage.get("lines_total"), "inputs": last.get("inputs"),
+                        "curve": [[p["inputs"], p["lines_share"]] for p in coverage.get("curve") or []
+                                  if p.get("lines_share") is not None]}
             shares = [t["accepted"] for t in targets.values()]
             current["best_accepted"] = max(shares, default=None)
             if current.get("decodes") and current["best_accepted"] is not None:
@@ -146,7 +158,7 @@ def parse(data: bytes | str) -> dict:
                     "version": _text(cov.get("version")), "lines": _ratio(cov.get("lines")), "branches": _ratio(cov.get("branches")),
                     "seeds_lines": _ratio(cov.get("seeds_lines")), "only_generated": _count(cov.get("only_generated")),
                     "only_seeds": _count(cov.get("only_seeds")), "lines_total": _count(cov.get("lines_total")),
-                    "inputs": _count(cov.get("inputs"))}
+                    "inputs": _count(cov.get("inputs")), "curve": _curve(cov.get("curve"))}
         out["specs"][key] = row
     return out
 
