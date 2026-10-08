@@ -4,6 +4,8 @@
       acme:
         url: https://github.com/acme/fuzz-specs     # or a path to a local checkout
         token_env: ACME_TOKEN                        # optional: the variable holding a token
+        signers:                                     # optional: public keys its index has to be signed by
+          - ssh-ed25519 AAAA... maintainer
     pins:
       png: acme:png/png-strict                       # what a plain `png` means to this user
 
@@ -22,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from fanbase.registry import DEFAULT_REGISTRY_NAME, REGISTRY_NAME, RegistryError
+from fanbase.signing import parse_key
 
 ENV_CONFIG = "FANBASE_CONFIG"
 
@@ -33,6 +36,7 @@ class RegistryConfig:
     name: str
     url: str
     token_env: str | None = None
+    signers: tuple[str, ...] = ()  # public keys, as lines of a .pub file: the index has to be signed by one of them
 
     def token(self) -> str | None:
         """The token, if the registry names a variable and the variable is set."""
@@ -100,7 +104,14 @@ def load_config(path: Path | None = None) -> Config:
                 check_token_env(token_env)
             except RegistryError as exc:
                 raise RegistryError(f"{where}: {exc}") from None
-        config.registries[str(name)] = RegistryConfig(str(name), item["url"], token_env)
+        signers = item.get("signers") or []
+        if not (isinstance(signers, list) and all(isinstance(k, str) for k in signers)):
+            raise RegistryError(f"{where}: signers has to be a list of public keys")
+        try:
+            keys = tuple(parse_key(k).text for k in signers)
+        except RegistryError as exc:
+            raise RegistryError(f"{where}: signers: {exc}") from None
+        config.registries[str(name)] = RegistryConfig(str(name), item["url"], token_env, keys)
     for ref, target in pins.items():
         if not isinstance(ref, str) or not isinstance(target, str) or ":" not in target:
             raise RegistryError(f"{path}: pin {ref!r} has to point at a spec of an added registry (name:spec)")
@@ -113,7 +124,7 @@ def save_config(config: Config, path: Path | None = None) -> Path:
     data: dict = {}
     if config.registries:
         data["registries"] = {
-            reg.name: {k: v for k, v in (("url", reg.url), ("token_env", reg.token_env)) if v}
+            reg.name: {k: v for k, v in (("url", reg.url), ("token_env", reg.token_env), ("signers", list(reg.signers))) if v}
             for reg in sorted(config.registries.values(), key=lambda r: r.name)
         }
     if config.pins:

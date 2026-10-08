@@ -392,6 +392,30 @@ and it is only a note. A parser that accepts five points fewer of a spec's files
 lines, is worse; Fandango's speed is only told when it moves by half or double, since it is the machine's as much as
 the spec's. `--fail-on-worse` makes it an exit status. Nothing to compare with (the first run) is only said.
 
+### Signed registries: `fanbase sign`, `--signer`, `fanbase verify`
+
+A spec is code that runs inside Fandango. `index.yml` holds the SHA-256 of every spec, so if a registry's maintainers sign
+the index, every spec that matches it is what they published, whoever else got to the repository, the host or the network.
+The signature is `index.yml.sig`, next to the index; it is an SSH signature, made and checked by `ssh-keygen` (OpenSSH
+8.0 or later), so a key can be an ordinary one or one on a hardware token, and it is made in the namespace `fanbase`, so a
+signature the same key made for anything else (a git commit) is not one for an index.
+
+```bash
+fanbase reindex && fanbase sign --key ~/.ssh/fanbase_signing     # a maintainer, in the checkout: writes index.yml.sig
+fanbase registry add https://github.com/acme/specs --signer ~/keys/acme.pub     # a user: from now on, only if it is signed by it
+fanbase verify acme                         # is it still? (or: fanbase --registry URL verify --signer KEY)
+```
+
+The keys to trust are the user's choice, never the registry's: a registry that said which keys to trust would say so in the
+very files in question. They are pinned with `registry add --signer` (a key, or a `.pub` file; the registry has to be signed by
+one of them to be added), and kept in the user's config; the public registry's will be in the CLI itself. A registry that
+has keys pinned is refused, with nothing in it believed, if its index is not signed, is signed by another key, or was changed
+after it was signed. Only modern keys (ed25519, ecdsa, security keys) are taken, and only the key itself, not a comment.
+
+What a signature does not say is that the index is the newest: an old index, signed, stays signed. To read a registry as it was
+at a release, point at the release (`.../tree/<tag>`), which does not move; a registry that signs only its releases is read
+verified that way. fanbase never reads a private key: `ssh-keygen` does the signing, and asks for the passphrase or the touch.
+
 ### A site to browse the registry: `fanbase site`
 
 ```bash

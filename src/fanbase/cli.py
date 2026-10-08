@@ -46,6 +46,7 @@ from fanbase.quality import cmd_quality_build, for_registry, of as quality_of, s
 from fanbase.rebase import cmd_rebase
 from fanbase.registry import Registry, RegistryBase, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
+from fanbase.signing import Key, cmd_sign, cmd_verify, read_keys
 from fanbase.site import cmd_site
 from fanbase.source import locate_registry, moves
 
@@ -395,10 +396,13 @@ def cmd_registry_add(args, ctx: Context) -> int:
         token = RegistryConfig("probe", location, args.token_env).token()
         if token is None:
             print(f"note: ${args.token_env} is not set here", file=sys.stderr)
+    signers: list[Key] = [k for given in args.signer or [] for k in read_keys(given)]
     opened: RegistryBase
     if location.startswith(("http://", "https://")):
-        opened = RemoteRegistry(location, token)
+        opened = RemoteRegistry(location, token, tuple(signers))  # (refused here if the index is not signed by one of them)
     else:
+        if signers:
+            raise RegistryError("--signer is for a registry read over the network: a checkout on this machine is yours")
         path = Path(location).expanduser()
         opened = Registry(path)
         location = str(path.resolve())
@@ -407,7 +411,7 @@ def cmd_registry_add(args, ctx: Context) -> int:
         raise RegistryError("the registry does not say what it is called; give it a name with --name")
     name = check_registry_name(chosen)
     existing = ctx.config.registries.get(name)
-    if existing and existing.url == location:
+    if existing and existing.url == location and tuple(k.text for k in signers) == existing.signers:
         print(f"{name} is already added")
         return 0
     if existing:
@@ -419,9 +423,10 @@ def cmd_registry_add(args, ctx: Context) -> int:
             file=sys.stderr,
         )
     _confirm_trust(args, name, location)
-    ctx.config.registries[name] = RegistryConfig(name, location, args.token_env)
+    ctx.config.registries[name] = RegistryConfig(name, location, args.token_env, tuple(k.text for k in signers))
     path = save_config(ctx.config)
-    print(f"added {name}: {len(opened.formats())} formats ({path})")
+    signed = getattr(opened, "signed_by", None)
+    print(f"added {name}: {len(opened.formats())} formats ({path})" + (f"; its index is signed by {signed.fingerprint}" if signed else ""))
     return 0
 
 
@@ -448,8 +453,13 @@ def cmd_registry_remove(args, ctx: Context) -> int:
 
 
 def cmd_registry_list(args, ctx: Context) -> int:
-    rows = [("fanbase", str(locate_registry(args.registry, local=False)), "default")]
-    rows += [(reg.name, reg.url, "") for reg in sorted(ctx.config.registries.values(), key=lambda r: r.name)]
+    from fanbase.signing import DEFAULT_SIGNERS, parse_key
+
+    default_keys = [parse_key(k).fingerprint for k in DEFAULT_SIGNERS]
+    rows = [("fanbase", str(locate_registry(args.registry, local=False)),
+             "default" + (f", signed by {' or '.join(default_keys)}" if default_keys else ""))]
+    rows += [(reg.name, reg.url, f"signed by {' or '.join(parse_key(k).fingerprint for k in reg.signers)}" if reg.signers else "")
+             for reg in sorted(ctx.config.registries.values(), key=lambda r: r.name)]
     width = max(len(name) for name, _, _ in rows)
     for name, where, note in rows:
         print(_clean(f"  {name:<{width}}  {where}" + (f"  ({note})" if note else "")))
@@ -598,6 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--name", help="what to call it (default: the name the registry gives itself)")
     q.add_argument("--token-env", metavar="VAR", help="the environment variable that holds a token, for a private registry")
     q.add_argument("--trust", action="store_true", help="do not ask whether you trust it")
+    q.add_argument("--signer", action="append", metavar="KEY", help="a public key (or a .pub file) that its index has to be signed by, from now on; may be repeated")
     q.set_defaults(fn=cmd_registry_add)
     q = reg_sub.add_parser("remove", help="forget a registry")
     q.add_argument("name")
@@ -720,6 +731,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", metavar="URL", help="the registry's repository, for links to the specs there (default: the public registry's, for a registry that has no name)")
     p.add_argument("--title", help="the site's name (default: Fanbase)")
     p.set_defaults(fn=cmd_site, local=True)
+
+    p = sub.add_parser("sign", help="maintainers: sign index.yml with your private key (ssh-keygen asks for the passphrase or a touch)")
+    p.add_argument("--key", required=True, metavar="FILE", help="your private key (or the public one, for a key that an agent or a token holds)")
+    p.set_defaults(fn=cmd_sign, local=True)
+
+    p = sub.add_parser("verify", help="is a registry's index signed by a key you trust?")
+    p.add_argument("name", nargs="?", help="a registry you added (default: the one being read)")
+    p.add_argument("--signer", action="append", metavar="KEY", help="a public key (or a .pub file) to check against; may be repeated (default: the ones pinned for the registry)")
+    p.set_defaults(fn=cmd_verify)
 
     p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
     p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")

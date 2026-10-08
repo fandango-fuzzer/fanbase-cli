@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from fanbase.manifest import INDEX_FILENAME
 from fanbase.registry import Registry, RegistryBase, RegistryError
 from fanbase.remote import RemoteRegistry
+from fanbase.signing import DEFAULT_SIGNERS, Key, parse_key
 
 ENV_REGISTRY = "FANBASE_REGISTRY"
 
@@ -27,6 +28,12 @@ def is_official(url: str) -> bool:
         return False
     official = [seg.lower() for seg in urlsplit(DEFAULT_REGISTRY).path.split("/") if seg]
     return [segments[0].lower(), segments[1].removesuffix(".git").lower()] == official
+
+
+def signers_for(url: str) -> tuple[Key, ...]:
+    """The keys the index of this registry has to be signed by: the public registry's, if it is that; none otherwise
+    (a registry the user added has the ones the user pinned: see config)."""
+    return tuple(parse_key(key) for key in DEFAULT_SIGNERS) if is_official(url) else ()
 
 
 def moves(url: str) -> bool:
@@ -94,6 +101,8 @@ def locate_registry(explicit: str | None = None, *, local: bool = False) -> Loca
 def open_registry(location: Location, token: str | None = None) -> RegistryBase:
     if location.kind == "path":
         return Registry(Path(location.value))
+    if signers := signers_for(location.value):
+        return RemoteRegistry(location.value, token, signers)
     return RemoteRegistry(location.value, token) if token else RemoteRegistry(location.value)
 
 

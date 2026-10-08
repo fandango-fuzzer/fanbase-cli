@@ -24,12 +24,13 @@ from fanbase.registry import (
     split_registry,
 )
 from fanbase.remote import RemoteRegistry
+from fanbase.signing import parse_key
 from fanbase.source import ENV_REGISTRY, find_registry
 
 def open_configured(reg: RegistryConfig) -> RegistryBase:
     """A registry the user added: a URL, or a path to a local checkout."""
     if reg.url.startswith(("http://", "https://")):
-        opened: RegistryBase = RemoteRegistry(reg.url, reg.token())
+        opened: RegistryBase = RemoteRegistry(reg.url, reg.token(), tuple(parse_key(k) for k in reg.signers))
     elif (Path(reg.url).expanduser() / "specs").is_dir():
         opened = Registry(Path(reg.url).expanduser())
     else:

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from fanbase.manifest import INDEX_FILENAME, parse_index_full
 from fanbase.registry import Entry, RegistryBase, RegistryError, RegistryUnavailable
+from fanbase.signing import SIGNATURE_FILENAME, Key, SigningError, Verified, verify
 
 DEFAULT_REF = "main"
 TIMEOUT = 30
@@ -72,10 +73,11 @@ def _get(url: str, token: str | None = None) -> bytes:
 
 
 class RemoteRegistry(RegistryBase):
-    def __init__(self, url: str, token: str | None = None) -> None:
+    def __init__(self, url: str, token: str | None = None, signers: tuple[Key, ...] | list[Key] = ()) -> None:
         self.url = url
         self.base = _raw_base(url)
         self._token = token
+        self.signed_by: Verified | None = None
         try:
             index = _get(f"{self.base}/{INDEX_FILENAME}", token)
         except RegistryUnavailable:
@@ -83,6 +85,14 @@ class RemoteRegistry(RegistryBase):
         except RegistryError as exc:
             # No index there at all (wrong URL, private repo): not a registry we can use.
             raise RegistryUnavailable(str(exc)) from None
+        if signers:  # keys the user trusts: the index has to be signed by one of them, or nothing in it is believed
+            try:
+                signature = _get(f"{self.base}/{SIGNATURE_FILENAME}", token)
+            except RegistryUnavailable:
+                raise
+            except RegistryError:
+                raise SigningError(f"{url} is not signed ({SIGNATURE_FILENAME} is not there), and you trust it only if it is") from None
+            self.signed_by = verify(index, signature, signers)
         self._entries, self.info = parse_index_full(index.decode("utf-8"))
 
     def formats(self) -> list[str]:

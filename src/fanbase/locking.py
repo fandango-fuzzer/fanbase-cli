@@ -10,7 +10,7 @@ from fanbase.lock import Lock, LockedSpec
 from fanbase.manager import Installed, entry_sha
 from fanbase.registry import Entry, RegistryBase, RegistryError
 from fanbase.remote import RemoteRegistry
-from fanbase.source import is_official
+from fanbase.source import is_official, signers_for
 
 LOG = logging.getLogger("fanbase")
 
@@ -106,7 +106,7 @@ def locked_registry(ctx, lock: Lock, name: str) -> RegistryBase:
     if ctx.default_is_explicit or url is None:
         return ctx.default
     if is_official(url):
-        return ctx.use_default(RemoteRegistry(url))
+        return ctx.use_default(RemoteRegistry(url, None, signers) if (signers := signers_for(url)) else RemoteRegistry(url))
     if url == where(ctx, ctx.default):
         return ctx.default
     raise RegistryError(
