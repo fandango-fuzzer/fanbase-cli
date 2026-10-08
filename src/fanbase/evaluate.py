@@ -89,6 +89,11 @@ class SpecReport:
         return max((r.accepted / r.total for r in ran), default=None)
 
     @property
+    def suggested(self) -> str | None:
+        """What `decodes` could say, from what the best target accepted: only for a spec that does not say."""
+        return band(self.best) if self.decodes is None and self.best is not None else None
+
+    @property
     def met(self) -> bool | None:
         """Is the share of files that the best target accepts what the spec says to expect?"""
         if self.decodes is None or self.best is None:
@@ -211,6 +216,7 @@ def to_json(reports: list[SpecReport], args) -> dict:
                 "decodes": r.decodes,
                 "best_accepted": None if r.best is None else round(r.best, 4),
                 "expectation_met": r.met,
+                "suggested_decodes": r.suggested,
                 "targets": [
                     {
                         "name": t.name, "title": t.title, "status": t.status, "note": t.note or None, "version": t.version,
@@ -311,6 +317,8 @@ def as_text(reports: list[SpecReport], args) -> str:
             out += ["  coverage of " + lines[0], *[f"    {line}" for line in lines[1:]]]
         if expect := _expectation(r):
             out.append(f"  {expect}")
+        if getattr(args, "suggest_decodes", False) and r.suggested:
+            out.append(f"  suggestion: decodes: {r.suggested}  (the best target accepts {r.best:.0%}; the spec's authors decide)")
         out.append("")
     return "\n".join(out).rstrip() + "\n"
 
@@ -352,6 +360,8 @@ def as_markdown(reports: list[SpecReport], args) -> str:
                 out += ["", f"_{clean(c.note)}_"]
         if expect := _expectation(r):
             out += ["", f"{'✅' if r.met else '⚠️'} {expect}"]
+        if getattr(args, "suggest_decodes", False) and r.suggested:
+            out += ["", f"💡 Suggestion: `decodes: {r.suggested}` (the best target accepts {r.best:.0%}; the spec's authors decide)."]
         out.append("")
     return "\n".join(out)
 

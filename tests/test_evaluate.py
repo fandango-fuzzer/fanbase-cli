@@ -428,3 +428,35 @@ def test_a_target_that_runs_out_of_time_is_said_so(capsys, reg, fake):
     assert "slow: out of time after " in text and " of 20 files" in text
     _, md, _ = evaluate(capsys, reg, "png", "-n", "20", "-j", "1", "--judge-budget", "0.8", "--markdown")
     assert "_slow: out of time after " in md
+
+
+def unsaid(reg, kind="png"):
+    """The spec does not say how often its files should decode."""
+    path = reg / "specs/png" / kind / "metadata.yml"
+    data = yaml.safe_load(path.read_text())
+    data.pop("decodes", None)
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    settle(reg)
+
+
+def test_a_spec_that_says_nothing_of_decoding_is_told_what_was_seen(capsys, reg, fake):
+    unsaid(reg)
+    code, out, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "8", "--suggest-decodes")
+    assert code == 0 and "suggestion: decodes: mostly" in out and "the best target accepts 75%" in out and "the spec's authors decide" in out
+    _, out, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "8")
+    assert "suggestion" not in out  # (only when asked)
+
+
+def test_the_suggestion_is_in_the_json_and_in_markdown(capsys, reg, fake):
+    unsaid(reg)
+    _, out, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "8", "--json")
+    assert json.loads(out)["specs"][0]["suggested_decodes"] == "mostly"
+    _, out, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "8", "--suggest-decodes", "--markdown")
+    assert "💡 Suggestion: `decodes: mostly`" in out
+
+
+def test_a_spec_that_does_say_gets_no_suggestion(capsys, reg, fake):
+    code, out, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "8", "--suggest-decodes", "--json")
+    assert json.loads(out)["specs"][0]["suggested_decodes"] is None
+    _, text, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "8", "--suggest-decodes")
+    assert "suggestion" not in text

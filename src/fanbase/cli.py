@@ -686,6 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--curve", metavar="N,N,...", help="with --coverage: after how many inputs to read the coverage (default 1,10,100,1000, and the last)")
     p.add_argument("--keep", metavar="DIR", help="keep the inputs in DIR (to look at them locally)")
     p.add_argument("--strict", action="store_true", help="exit 1 if a spec does not decode as often as it says it should")
+    p.add_argument("--suggest-decodes", action="store_true", help="for a spec that does not say how often its files should decode, say what the best target saw (the authors decide)")
     p.add_argument("--require-targets", action="store_true", help="exit 1 if a target cannot run here")
     p.add_argument("--json", action="store_true", help="the report as JSON")
     p.add_argument("--json-file", metavar="FILE", help="also write the report as JSON to FILE")

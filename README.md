@@ -292,7 +292,8 @@ png/png-apng  version 1.0: 100 inputs from seed 1 in 3.7s (27.0/s)
   machine; read them as a trend.
 - **What to expect.** Many specs exist to make files that do not decode. A spec says how often its files should
   be accepted, with `decodes: always|mostly|rarely|never`, and the report says whether the best target agrees
-  (`--strict` makes a mismatch a failure). One parser's word is not the format's: a parser may lack a feature, so
+  (`--strict` makes a mismatch a failure; `--suggest-decodes` says, for a spec that does not say, what the best target saw, for
+  its authors to decide). One parser's word is not the format's: a parser may lack a feature, so
   the best target decides, and a format should have several.
 - **Same each time.** `--seed` (default 1) is given to Fandango, and to Python's hash seed, so the inputs are the same.
 - **Time.** Some specs take seconds for a hundred inputs, some minutes. Fandango gets `--budget` seconds per spec
