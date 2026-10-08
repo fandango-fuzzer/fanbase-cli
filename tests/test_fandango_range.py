@@ -102,3 +102,60 @@ def test_ensure_logs_a_warning_for_fandango_dash_f(registry, root, monkeypatch, 
         done = ensure("png", Registry(registry), root)
     assert done.status == "installed"  # a warning, not a refusal
     assert "Fanbase: png/png is written for fandango >=1.3" in caplog.text
+
+
+# --- many specs with the same problem are said once
+
+@pytest.fixture
+def many(tmp_path):
+    from conftest import build_registry
+
+    return build_registry(tmp_path / "many", {(f"f{i}", f"f{i}"): dict(version="1.0") for i in range(6)})
+
+
+def warnings_of(err):
+    return [line for line in err.splitlines() if line.startswith("warning:")]
+
+
+def test_more_than_three_specs_with_one_problem_are_said_once(capsys, many, root, monkeypatch):
+    installed_fandango(monkeypatch, "1.2.0")
+    main(["--registry", str(many), "install", "--all"])
+    lines = warnings_of(capsys.readouterr().err)
+    assert lines == ["warning: 6 specs are written for fandango >=1.3, and fandango 1.2.0 is installed (f0/f0, f1/f1, f2/f2, ...)"]
+
+
+def test_three_or_fewer_are_named_one_by_one(capsys, many, root, monkeypatch):
+    installed_fandango(monkeypatch, "1.2.0")
+    main(["--registry", str(many), "install", "f0", "f1", "f2"])
+    lines = warnings_of(capsys.readouterr().err)
+    assert lines == [f"warning: f{i}/f{i} is written for fandango >=1.3, and fandango 1.2.0 is installed" for i in range(3)]
+
+
+def test_different_problems_are_said_separately(capsys, many, root, monkeypatch):
+    installed_fandango(monkeypatch, "1.2.0")
+    require(many, "f0", ">=2.0")
+    for i in range(1, 6):
+        require(many, f"f{i}", ">=1.3")
+    main(["--registry", str(many), "install", "--all"])
+    lines = warnings_of(capsys.readouterr().err)
+    assert sorted(lines) == sorted([
+        "warning: f0/f0 is written for fandango >=2.0, and fandango 1.2.0 is installed",
+        "warning: 5 specs are written for fandango >=1.3, and fandango 1.2.0 is installed (f1/f1, f2/f2, f3/f3, ...)",
+    ])
+
+
+def test_an_unreadable_range_has_a_plural_too(capsys, many, root, monkeypatch):
+    installed_fandango(monkeypatch, "1.2.0")
+    for i in range(6):
+        require(many, f"f{i}", "newer than 1.3 or so")
+    main(["--registry", str(many), "install", "--all"])
+    assert warnings_of(capsys.readouterr().err) == [
+        "warning: 6 specs cannot read their fandango version range 'newer than 1.3 or so' (f0/f0, f1/f1, f2/f2, ...)"
+    ]
+
+
+def test_the_singular_texts_are_what_they_were():
+    from fanbase.manager import FandangoMismatch
+
+    assert FandangoMismatch(">=1.3", "1.2.0").describe() == "is written for fandango >=1.3, and fandango 1.2.0 is installed"
+    assert FandangoMismatch("x").describe() == "cannot read its fandango version range 'x'"

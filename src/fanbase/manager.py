@@ -82,9 +82,27 @@ class Installed:
     def fandango_mismatch(self) -> str | None:
         return fandango_mismatch(self.meta)
 
+    @property
+    def fandango_check(self) -> FandangoMismatch | None:
+        return fandango_check(self.meta)
 
-def fandango_mismatch(meta: dict) -> str | None:
-    """Why the Fandango that is installed does not suit a spec, or None if it does.
+
+@dataclass(frozen=True)
+class FandangoMismatch:
+    """The installed Fandango is not one a spec is written for (or its range cannot be read)."""
+
+    wanted: str
+    have: str | None = None  # None: the range could not be read
+
+    def describe(self, many: bool = False) -> str:
+        """What is wrong, to follow the name of one spec or, with `many`, of several."""
+        if self.have is None:
+            return f"cannot read {'their' if many else 'its'} fandango version range {self.wanted!r}"
+        return f"{'are' if many else 'is'} written for fandango {self.wanted}, and fandango {self.have} is installed"
+
+
+def fandango_check(meta: dict) -> FandangoMismatch | None:
+    """Whether the Fandango that is installed suits a spec, or how it does not.
 
     A spec's `fandango` is a version range ('>=1.3'). Without Fandango installed (the
     client can be used alone) or without a range there is nothing to compare, so nothing
@@ -97,14 +115,20 @@ def fandango_mismatch(meta: dict) -> str | None:
     try:
         specifier = SpecifierSet(str(wanted))
     except InvalidSpecifier:
-        return f"cannot read its fandango version range {wanted!r}"
+        return FandangoMismatch(str(wanted))
     try:
         have = importlib.metadata.version(FANDANGO_DISTRIBUTION)
     except importlib.metadata.PackageNotFoundError:
         return None
     if specifier.contains(have, prereleases=True):
         return None
-    return f"is written for fandango {wanted}, and fandango {have} is installed"
+    return FandangoMismatch(str(wanted), have)
+
+
+def fandango_mismatch(meta: dict) -> str | None:
+    """`fandango_check` as a sentence about one spec, or None if the Fandango suits it."""
+    mismatch = fandango_check(meta)
+    return mismatch.describe() if mismatch else None
 
 
 def install_root() -> Path:

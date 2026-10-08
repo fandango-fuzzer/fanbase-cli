@@ -22,6 +22,7 @@ from fanbase.deps import closure, dependencies, dependents, label, self_names
 from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
 from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.manager import (
+    FandangoMismatch,
     Installed,
     all_installed,
     declared_requirements,
@@ -53,10 +54,22 @@ def _report(done: Installed, hint_requirements: bool) -> None:
         print(f"  requires: pip install {' '.join(needs)}")
 
 
+# Past this many specs with the same problem, it is said once rather than once for each.
+_NAMED_ONE_BY_ONE = 3
+
+
 def _warn_fandango(results: list[Installed]) -> None:
+    groups: dict[FandangoMismatch, list[Installed]] = {}
     for done in results:
-        if problem := done.fandango_mismatch:
-            print(f"warning: {_clean(done)} {_clean(problem)}", file=sys.stderr)
+        if mismatch := done.fandango_check:
+            groups.setdefault(mismatch, []).append(done)
+    for mismatch, specs in groups.items():
+        if len(specs) <= _NAMED_ONE_BY_ONE:
+            for done in specs:
+                print(f"warning: {_clean(done)} {_clean(mismatch.describe())}", file=sys.stderr)
+        else:
+            named = ", ".join(_clean(done) for done in specs[:_NAMED_ONE_BY_ONE])
+            print(f"warning: {len(specs)} specs {_clean(mismatch.describe(many=True))} ({named}, ...)", file=sys.stderr)
 
 
 def _install_requirements(results: list[Installed], args) -> None:
