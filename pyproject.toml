@@ -9,6 +9,7 @@ description = "Client for the Fanbase registry of Fandango input specifications"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
+authors = [{ name = "José Antonio Zamudio Amaya" }]
 keywords = ["fandango", "fuzzing", "test generation", "grammars", "file formats", "registry"]
 classifiers = [
     "Development Status :: 4 - Beta",
