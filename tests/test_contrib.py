@@ -391,3 +391,63 @@ def test_check_with_the_real_fandango(capsys, tmp_path, monkeypatch):
     run(capsys, "--registry", str(reg), "reindex")
     code, out, _ = run(capsys, "--registry", str(reg), "check", "--count", "1")
     assert code == 1 and "FAILED:  txt/txt: fandango failed" in out
+
+
+# --- fork: which registry a spec came from
+
+def write_text(reg, kind, text):
+    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(text)
+    republish(reg, kind)
+
+
+@pytest.fixture
+def acme(tmp_path):
+    """Someone's own registry, as a checkout: png-top builds on png-base and includes it by the registry's name."""
+    reg = build_registry(tmp_path / "acme", {
+        ("png", "png-base"): dict(version="1.0", extensions=["png"], authors=["Bob"]),
+        ("png", "png-top"): dict(version="1.0", extensions=["png"], extends=["png-base"], authors=["Bob"]),
+    }, name="acme")
+    write_text(reg, "png-top", 'include("acme/png/png-base.fan")\n<start> ::= <base>\n')
+    return reg
+
+
+@pytest.fixture
+def mine2(tmp_path):
+    return build_registry(tmp_path / "mine2", {("gif", "gif"): dict(version="1.0")}, name="mine")
+
+
+def test_a_spec_of_a_checkout_that_names_itself_is_not_the_public_registrys(capsys, acme, mine2):
+    # acme is opened as the default registry here, but it is acme, not `fanbase`
+    code, _, err = run(capsys, "--registry", str(acme), "fork", "png-top", "--as", "png-top-mine", "--into", str(mine2))
+    assert code == 2 and "acme" in err and "cannot extend" in err
+    assert not (mine2 / "specs/png").exists()
+
+
+def test_the_lineage_names_the_registry_the_spec_really_came_from(capsys, acme):
+    code, _, _ = run(capsys, "--registry", str(acme), "fork", "png-top", "--as", "png-top2")
+    assert code == 0
+    m = meta(acme, "png-top2")
+    assert m["derived_from"] == "acme:png/png-top@1.0"  # not fanbase:
+    assert m["extends"] == ["png-base"]  # the same registry, so it still means the same
+
+
+def test_a_fork_that_includes_the_files_of_a_registry_it_will_not_live_in_is_warned_about(capsys, acme, mine2):
+    # nothing is said about what it extends, but its text includes a file only acme has
+    republish(acme, "png-top", extends=[])
+    code, out, err = run(capsys, "--registry", str(acme), "fork", "png-top", "--as", "png-top-mine", "--into", str(mine2))
+    assert code == 0
+    assert 'warning: it includes "acme/png/png-base.fan", a file of the registry acme' in err
+    assert "fork what it includes first" in err
+
+
+def test_a_fork_inside_the_same_registry_has_nothing_to_warn_about(capsys, acme):
+    republish(acme, "png-top", extends=[])
+    code, _, err = run(capsys, "--registry", str(acme), "fork", "png-top", "--as", "png-top2")
+    assert code == 0 and "warning" not in err
+
+
+def test_includes_of_the_public_registry_are_fine_anywhere(capsys, reg, mine2):
+    write_text(reg, "png-apng", 'include("png/png.fan")\n<start> ::= <png>\n')
+    code, _, err = run(capsys, "--registry", str(reg), "fork", "png-apng", "--as", "png-apng-mine", "--into", str(mine2))
+    assert code == 0 and "warning" not in err
+    assert meta(mine2, "png-apng-mine")["extends"] == ["fanbase:png"]

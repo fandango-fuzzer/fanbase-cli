@@ -7,6 +7,7 @@ your own), which is where `fanbase publish` takes the change to a pull request.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from packaging.version import InvalidVersion, Version
 
 from fanbase.config import Config
 from fanbase.context import Context
-from fanbase.deps import check_version, closure, parse_extends, self_names
+from fanbase.deps import check_version, closure, identity, parse_extends, self_names
 from fanbase.manager import entry_sha, install, spec_path, split_ref
 from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean
@@ -148,21 +149,35 @@ def cmd_new(args, ctx: Context) -> int:
 
 # --- fork
 
-def _requalified(items: list, source: RegistryBase, target_owner: str) -> list:
-    """The `extends` of a spec, as they must be written once the spec lives in another registry."""
+def _requalified(items: list, source: RegistryBase, target_id: str) -> list:
+    """The `extends` of a spec, as they must be written once the spec lives in the registry
+    called `target_id` ("" is the public one)."""
+    source_id = identity(source)
+    names = {source_id or DEFAULT_REGISTRY_NAME, source.name} - {""}
     out = []
     for item in items:
-        dep = parse_extends(item, source.name, self_names(source))
-        if dep.registry == target_owner:
+        dep = parse_extends(item, source_id, names)
+        if dep.registry != source_id:  # the public registry's, written `fanbase:...`: means the same anywhere
             out.append(item)
-        elif dep.registry == "":
+        elif source_id == target_id:  # a spec of its own registry, which it stays in
+            out.append(item)
+        elif source_id == "":  # a spec of the public registry, which the new registry names with a prefix
             out.append(item if str(item).startswith(f"{DEFAULT_REGISTRY_NAME}:") else f"{DEFAULT_REGISTRY_NAME}:{item}")
         else:
             raise RegistryError(
-                f"{item} is a spec of the registry {dep.registry}, which a spec of {target_owner or 'this registry'} "
+                f"{item} is a spec of the registry {source_id}, which a spec of {target_id or 'the public registry'} "
                 "cannot extend; fork what it extends first"
             )
     return out
+
+
+_INCLUDE = re.compile(r"""include\(\s*(["'])(.+?)\1\s*\)""")
+
+
+def foreign_includes(text: str, source: RegistryBase, target_id: str) -> list[str]:
+    """What a spec includes that only exists in the registry it comes from, and not in `target_id`."""
+    prefixes = {name for name in (identity(source), source.name) if name and name != target_id}
+    return [path for _, path in _INCLUDE.findall(text) if any(path.startswith(f"{prefix}/") for prefix in prefixes)]
 
 
 def cmd_fork(args, ctx: Context) -> int:
@@ -182,7 +197,7 @@ def cmd_fork(args, ctx: Context) -> int:
         raise RegistryError(f"{fmt}/{kind} exists already: {folder}")
 
     owner = target.info.get("name", "")
-    where = f"{source.name or DEFAULT_REGISTRY_NAME}:{entry}"
+    where = f"{identity(source) or DEFAULT_REGISTRY_NAME}:{entry}"
     version = entry.meta.get("version")
     keep = ("title", "extensions", "mime", "reference", "license", "source", "fandango", "pip")
     meta: dict = {"description": f"{entry.meta.get('description') or entry.kind} (fork of {where})".strip()}
@@ -199,6 +214,12 @@ def cmd_fork(args, ctx: Context) -> int:
     folder.mkdir(parents=True)
     try:
         text = source.read(entry).decode("utf-8")
+        for path in foreign_includes(text, source, owner):
+            print(
+                f'warning: it includes "{clean(path)}", a file of the registry {identity(source)}, which '
+                f"{owner or 'the public registry'} does not have; fork what it includes first, or change the include",
+                file=sys.stderr,
+            )
         (folder / f"{kind}.fan").write_text(text, encoding="utf-8")
         (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
         refresh(target)

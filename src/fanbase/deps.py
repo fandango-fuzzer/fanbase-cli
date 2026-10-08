@@ -73,6 +73,12 @@ def self_names(reg: RegistryBase) -> set[str]:
     return names
 
 
+def identity(reg: RegistryBase) -> str:
+    """The name a registry goes by in the text of its specs: the name it gives itself, else the
+    name it was added under. "" for the public registry, which has neither."""
+    return reg.info.get("name") or reg.name
+
+
 def parse_extends(item: object, owner: str, names: Iterable[str] | None = None) -> Dependency:
     """One entry of `extends`, for a spec of the registry called `owner` ("" is the default).
 
