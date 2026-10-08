@@ -466,7 +466,8 @@ fanbase evaluate --all --hide-crashes --incidents DIR --incident-recipients reci
 ```
 
 - **What is in it.** For each cause (a bug found forty times is one entry): the input (three examples), the command
-  with the file as `INPUT`, how it ended (the signal), what the target said, whether it happened again when tried
+  with the file as `INPUT` (written without this machine's paths, with the small files of the target that call the parser
+  in `harness/`, once for each target, so that the vendor can see how it was called), how it ended (the signal), what the target said, whether it happened again when tried
   once more (a hang can be a busy machine), the target's version, and what is needed to make the file again: the
   spec's version and hash, the Fandango and Fanbase versions, the seed. And a note to the vendor to start from, with a
   checklist: report it privately, write down the date, a usual 90 days to a fix.

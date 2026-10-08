@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -404,3 +405,60 @@ def test_the_worst_record_can_be_mailed(tmp_path, monkeypatch):
     data = incidents.build_bundle(log, meta)
     assert len(data) <= MAX_MAIL - (1 << 20), len(data)  # (with room for age's own header and padding)
     assert len(log.incidents) == incidents.MAX_INCIDENTS
+
+
+# --- what the vendor is told of how the parser was called
+
+@posix
+def test_what_ran_is_told_without_the_paths_of_this_machine(capsys, crashing, fandango, tmp_path):
+    evaluate(capsys, crashing, "-n", "4", "--incidents", str(tmp_path / "private"))
+    folder, = (tmp_path / "private").glob("incidents-*")
+    incident, = json.loads((folder / "manifest.json").read_text())["incidents"]
+    assert incident["command"] == ["python3", "targets/crasher/harness.py", "INPUT"]
+    note = (folder / incident["id"] / "REPORT.md").read_text()
+    assert "    python3 targets/crasher/harness.py INPUT" in note
+    for private in (str(tmp_path), sys.executable, str(Path.home())):
+        assert private not in note and private not in (folder / "manifest.json").read_text()
+    assert "they are in harness/crasher/ of this record" in note
+
+
+@posix
+def test_the_files_that_call_the_parser_are_in_the_record_once(capsys, two_specs, fandango, tmp_path):
+    run(capsys, "--registry", str(two_specs), "evaluate", "png", "png-apng", "-n", "4", "--incidents", str(tmp_path / "private"))
+    folder, = (tmp_path / "private").glob("incidents-*")
+    assert [p.name for p in folder.rglob("harness.py")] == ["harness.py"]  # (two incidents, one copy)
+    assert (folder / "harness/crasher/harness.py").read_text() == (two_specs / "targets/crasher/harness.py").read_text()
+
+
+@posix
+def test_the_record_with_harness_files_still_opens(capsys, crashing, fandango, age, recipients, tmp_path):
+    from fanbase.incident_cmds import unpack
+
+    evaluate(capsys, crashing, "-n", "4", "--incidents", str(tmp_path / "p"), "--incident-recipients", str(recipients))
+    written = unpack(age.plaintexts[-1], tmp_path / "opened")
+    assert (tmp_path / "opened/harness/crasher/harness.py") in written
+    assert (tmp_path / "opened/harness").stat().st_mode & 0o777 == 0o700
+
+
+@posix
+def test_a_file_the_record_could_not_open_is_left_out(capsys, reg, fandango, tmp_path):
+    target(reg, "oddly", CRASH)
+    folder = reg / "targets/oddly"
+    (folder / "odd name.py").write_text("print('x')\n")
+    config = yaml.safe_load((folder / "target.yml").read_text())
+    config["run"] = ["{python}", "{dir}/harness.py", "{dir}/odd name.py", "{file}"]
+    (folder / "target.yml").write_text(yaml.safe_dump(config))
+    (reg / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["oddly"]}))
+    settle(reg)
+    evaluate(capsys, reg, "-n", "2", "--incidents", str(tmp_path / "private"))
+    out, = (tmp_path / "private").glob("incidents-*")
+    assert (out / "harness/oddly/harness.py").is_file() and not list(out.rglob("odd name.py"))
+
+
+@posix
+def test_what_is_kept_of_the_harness_is_bounded(capsys, crashing, fandango, tmp_path, monkeypatch):
+    monkeypatch.setattr(incidents, "MAX_HARNESS_FILE", 10)  # (the harness is longer than this)
+    evaluate(capsys, crashing, "-n", "2", "--incidents", str(tmp_path / "private"))
+    folder, = (tmp_path / "private").glob("incidents-*")
+    assert not (folder / "harness").exists()
+    assert "they are in harness/" not in next(folder.glob("*/REPORT.md")).read_text()

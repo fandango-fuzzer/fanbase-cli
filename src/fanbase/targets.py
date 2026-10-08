@@ -243,6 +243,12 @@ def unavailable(target: Target) -> str | None:
     return None
 
 
+def portable(target: Target) -> tuple[str, ...]:
+    """How a target is run, as something to read on another machine: without the paths of this one."""
+    return tuple(part.replace("{file}", "INPUT").replace("{dir}", f"targets/{target.name}").replace("{python}", "python3")
+                 for part in target.run)
+
+
 def _expand(argv: tuple[str, ...], target: Target, file: Path | str = "") -> list[str]:
     return [
         part.replace("{file}", str(file)).replace("{dir}", str(target.directory)).replace("{python}", sys.executable)
@@ -290,7 +296,7 @@ def normalise_reason(text: str, path: Path) -> str:
 def judge(target: Target, path: Path, *, timeout: int = 10, memory_mb: int = 2048, cwd: Path | None = None) -> Verdict:
     """Ask the target about one file."""
     argv = _expand(target.run, target, path)
-    shown = tuple(_expand(target.run, target, "INPUT"))
+    shown = portable(target)
     if os.name == "posix":
         argv = [sys.executable, "-m", "fanbase._limits", str(memory_mb), str(timeout + 5), *argv]
     try:

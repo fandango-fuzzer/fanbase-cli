@@ -22,6 +22,7 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -46,6 +47,12 @@ KEEP_PER_CAUSE = 3  # inputs kept for each cause
 # what is beyond that is counted. The sum stays below 16 MB.
 MAX_KEPT = 8 * 1024 * 1024
 MAX_INCIDENTS = 300
+# What a vendor needs to see how its parser was called: the small files of the target that ran it (a harness), once for
+# each target, and no more than this in all.
+MAX_HARNESS = 1024 * 1024
+MAX_HARNESS_FILE = 32 * 1024
+MAX_HARNESS_FILES = 4
+_SAFE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 _run = subprocess.run  # every program started here goes through it, so that tests can stand in for it
 
@@ -90,6 +97,8 @@ class IncidentLog:
         self._versions: dict[str, str | None] = {}
         self._kept = 0  # bytes of inputs kept so far
         self.not_itemised = 0  # occurrences of causes beyond MAX_INCIDENTS
+        self.harness: dict[str, dict[str, bytes]] = {}  # target -> its files that its command runs, by their path in the target
+        self._harness_bytes = 0
 
     def record(self, *, spec: str, version: str | None, sha256: str, target: Target, file: Path, verdict: Verdict,
                confirmed: bool) -> None:
@@ -103,6 +112,7 @@ class IncidentLog:
         with self._lock:
             if target.name not in self._versions:
                 self._versions[target.name] = version_of(target)
+                self._keep_harness(target)
             key = (spec, target.name, cause)
             incident = self._by_cause.get(key)
             if incident is None:
@@ -119,6 +129,25 @@ class IncidentLog:
                 self._kept += len(data) if keep else 0
                 incident.inputs.append((data if keep else None, digest, len(data)))
 
+    def _keep_harness(self, target: Target) -> None:
+        found: dict[str, bytes] = {}
+        for part in target.run:
+            if not part.startswith("{dir}/") or len(found) >= MAX_HARNESS_FILES:
+                continue
+            relative = part[len("{dir}/"):]
+            parts = relative.split("/")
+            if len(parts) > 3 or not all(_SAFE_PART.fullmatch(x) for x in parts):
+                continue  # (a name that `incidents open` would refuse is not put in the record)
+            try:
+                data = (target.directory / relative).read_bytes()
+            except OSError:
+                continue
+            if len(data) <= MAX_HARNESS_FILE and self._harness_bytes + len(data) <= MAX_HARNESS:
+                found[relative] = data
+                self._harness_bytes += len(data)
+        if found:
+            self.harness[target.name] = found
+
     @property
     def incidents(self) -> list[Incident]:
         return sorted(self._by_cause.values(), key=lambda i: (i.spec, i.target, i.kind, i.signature))
@@ -126,7 +155,7 @@ class IncidentLog:
 
 # --- what is written
 
-def _report(inc: Incident, meta: dict) -> str:
+def _report(inc: Incident, meta: dict, harness: dict[str, dict[str, bytes]]) -> str:
     ended = {"crash": f"killed by {inc.signal}", "hang": "no answer in time", "killed": f"killed by {inc.signal} (for what it used)"}[inc.kind]
     again = f"{inc.confirmed} of {inc.occurrences}" if inc.occurrences > 1 else ("yes" if inc.confirmed else "no")
     kept = ", ".join(f"input-{n}.bin ({size} bytes, sha256 {digest[:16]})" if data is not None
@@ -144,7 +173,7 @@ def _report(inc: Incident, meta: dict) -> str:
 
     {' '.join(inc.argv)}
 
-(`INPUT` is the file; on a machine with {inc.target} installed.)
+(`INPUT` is the file, and `targets/{inc.target}` the folder of the files that call {inc.target}{"; they are in harness/" + inc.target + "/ of this record" if inc.target in harness else ""}.)
 
 What it printed (the first {len(inc.stderr)} bytes):
 
@@ -190,8 +219,11 @@ def members(log: IncidentLog, meta: dict) -> list[tuple[str, bytes]]:
         index += ["", f"{log.not_itemised} further occurrence(s) of other causes happened after {MAX_INCIDENTS} had been written down; "
                       "run it again on your machine with --incidents to see them."]
     out.append(("REPORT.md", "\n".join(index).encode() + b"\n"))
+    for target_name, files in sorted(log.harness.items()):
+        if any(i.target == target_name for i in found):
+            out += [(f"harness/{target_name}/{relative}", data) for relative, data in sorted(files.items())]
     for i in found:
-        out.append((f"{i.id}/REPORT.md", _report(i, meta).encode()))
+        out.append((f"{i.id}/REPORT.md", _report(i, meta, log.harness).encode()))
         out.append((f"{i.id}/stderr.txt", i.stderr))
         out += [(f"{i.id}/input-{n}.bin", data) for n, (data, _, _) in enumerate(i.inputs, 1) if data is not None]
     return out
@@ -254,7 +286,10 @@ def write_private(log: IncidentLog, meta: dict, directory: Path, recipients: Pat
     for name, data in members(log, meta):
         path = folder / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(path.parent, 0o700)
+        for below in (path.parent, *path.parent.parents):  # (every folder between the record and the file)
+            os.chmod(below, 0o700)
+            if below == folder:
+                break
         path.write_bytes(data)
         os.chmod(path, 0o600)
     os.chmod(folder, 0o700)
