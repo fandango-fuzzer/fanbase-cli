@@ -464,7 +464,7 @@ def cmd_registry_list(args, ctx: Context) -> int:
 
     default_keys = [parse_key(k).fingerprint for k in DEFAULT_SIGNERS]
     rows = [("fanbase", str(locate_registry(args.registry, local=False)),
-             "default" + (f", signed by {' or '.join(default_keys)}" if default_keys else ""))]
+             "default" + (f"; its releases are signed by {' or '.join(default_keys)}" if default_keys else ""))]
     rows += [(reg.name, reg.url, f"signed by {' or '.join(parse_key(k).fingerprint for k in reg.signers)}" if reg.signers else "")
              for reg in sorted(ctx.config.registries.values(), key=lambda r: r.name)]
     width = max(len(name) for name, _, _ in rows)

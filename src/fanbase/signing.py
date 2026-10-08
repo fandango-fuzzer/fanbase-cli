@@ -41,7 +41,9 @@ _ARMOR = "-----BEGIN SSH SIGNATURE-----"
 # The public keys that sign the public registry's index, as `ssh-keygen -y` or a .pub file writes them. While there are none,
 # the public registry is not checked (and when there are, only at a release or a commit, not at main): a maintainer who signs puts the public key here, in the CLI, which is how it
 # gets to the users (the key has to come from somewhere other than the registry it signs).
-DEFAULT_SIGNERS: tuple[str, ...] = ()
+DEFAULT_SIGNERS: tuple[str, ...] = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJlNdLap2I550dZDJB6NT3Db9gijDDRk+F2BczsrloXH",  # SHA256:mBALMSMJxkD+RjdVZWwFnHBSc+9FIEnM4xwrgTBb/rQ: the maintainer who signs the releases, from 2026-10-08
+)
 
 # What may sign: modern keys only (no RSA, no DSA).
 _KEY = re.compile(

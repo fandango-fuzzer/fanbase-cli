@@ -327,7 +327,8 @@ def test_verify_needs_keys(capsys, reg, key):
 
 def test_the_public_registry_is_checked_at_a_release_when_it_has_keys(monkeypatch, key):
     official = "https://github.com/fandango-fuzzer/fanbase"
-    assert source.signers_for(f"{official}/tree/v2026.11.01") == ()  # (no keys yet: nothing is checked)
+    monkeypatch.setattr(source, "DEFAULT_SIGNERS", ())
+    assert source.signers_for(f"{official}/tree/v2026.11.01") == ()  # (no keys: nothing is checked)
     monkeypatch.setattr(source, "DEFAULT_SIGNERS", (key[1],))
     expected = [parse_key(key[1]).text]
     assert [k.text for k in source.signers_for(f"{official}/tree/v2026.11.01")] == expected  # a release
@@ -359,3 +360,13 @@ def test_a_release_that_is_signed_opens_with_the_built_in_keys(capsys, reg, key,
     monkeypatch.setattr(source, "moves", lambda u: False)
     opened = source.open_registry(source.Location("url", url))
     assert opened.signed_by.fingerprint == parse_key(key[1]).fingerprint
+
+
+def test_the_public_registry_has_a_key_and_it_is_a_real_one():
+    from fanbase.signing import DEFAULT_SIGNERS
+
+    assert len(DEFAULT_SIGNERS) >= 1
+    for text in DEFAULT_SIGNERS:
+        assert parse_key(text).kind == "ssh-ed25519" and parse_key(text).text == text  # (the key and nothing after it)
+    assert source.signers_for("https://github.com/fandango-fuzzer/fanbase/tree/v2026.11.01")  # (a release is checked)
+    assert source.signers_for("https://github.com/fandango-fuzzer/fanbase") == ()  # (main is not)

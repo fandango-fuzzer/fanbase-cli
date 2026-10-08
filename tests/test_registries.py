@@ -105,7 +105,7 @@ def test_a_registry_that_calls_itself_something_else_is_pointed_out(capsys, regi
 def test_listing_the_registries(capsys, registry, added):
     code, out, _ = run(capsys, "--registry", str(registry), "registry", "list")
     assert code == 0
-    assert "fanbase" in out and str(registry) in out and "(default)" in out
+    assert "fanbase" in out and str(registry) in out and "(default; its releases are signed by SHA256:" in out
     assert "acme" in out and str(added.resolve()) in out
 
 
