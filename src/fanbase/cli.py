@@ -22,6 +22,7 @@ from fanbase.context import Context
 from fanbase.deps import closure, dependencies, dependents, label, self_names
 from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
 from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
+from fanbase.doi import cmd_doi
 from fanbase.evaluate import cmd_evaluate, cmd_targets
 from fanbase.incident_cmds import cmd_incidents_open, cmd_incidents_send
 from fanbase.manager import (
@@ -701,6 +702,16 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("-o", "--output", default="quality.json", metavar="FILE", help="where to write it (default quality.json; - for the screen)")
     q.add_argument("--add-to", metavar="FILE|URL", help="start from earlier results: what they say of other specs stays")
     q.set_defaults(fn=cmd_quality_build)
+
+    p = sub.add_parser("doi", help="a DOI for a spec, from Zenodo, written into its metadata.yml (opt-in; says what it would do, by default)")
+    p.add_argument("ref", help="the spec, e.g. png-apng")
+    p.add_argument("--sandbox", action="store_true", help="do it on sandbox.zenodo.org, to try: its DOIs mean nothing and nothing is written (token in ZENODO_SANDBOX_TOKEN)")
+    p.add_argument("--production", action="store_true", help="publish on zenodo.org, which is for good; asks first (token in ZENODO_TOKEN)")
+    p.add_argument("--new-version", action="store_true", help="the spec has a Zenodo DOI already: make this a new version of that record")
+    p.add_argument("--allow-draft", action="store_true", help="also for a spec whose status is draft")
+    p.add_argument("--yes", action="store_true", help="do not ask first")
+    p.add_argument("--api", metavar="URL", help="another Zenodo (https, or this machine), for tests")
+    p.set_defaults(fn=cmd_doi, local=True)
 
     p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
     p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")

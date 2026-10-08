@@ -392,6 +392,25 @@ and it is only a note. A parser that accepts five points fewer of a spec's files
 lines, is worse; Fandango's speed is only told when it moves by half or double, since it is the machine's as much as
 the spec's. `--fail-on-worse` makes it an exit status. Nothing to compare with (the first run) is only said.
 
+### A DOI for a spec: `fanbase doi`
+
+A DOI makes a spec citable as it was: [Zenodo](https://zenodo.org) keeps the spec's `.fan` and `metadata.yml`, and the DOI
+always means those. Zenodo's records are permanent, and cannot be taken back or changed, so this is opt-in and careful:
+
+```bash
+fanbase doi png-apng                           # says what would be sent, and sends nothing
+fanbase doi png-apng --sandbox                 # tries it on sandbox.zenodo.org, whose DOIs mean nothing; writes nothing
+fanbase doi png-apng --production              # publishes on zenodo.org after asking, and writes doi: into metadata.yml
+fanbase doi png-apng --production --new-version    # the spec changed after it got a DOI: a new version of that record
+```
+
+The access token is in `ZENODO_TOKEN` (`ZENODO_SANDBOX_TOKEN` for the sandbox) and is sent to Zenodo's own host over
+https, and never shown or put in a file. A spec in draft, one without authors or version, one whose `metadata.yml` is out of
+date, and one that has a DOI already are refused. The record is of type software, named after the spec and its version, with the
+spec's authors (as "Family, Given"), license and a link to the registry. A record that cannot be finished is deleted rather
+than left half made. The DOI goes into the spec's metadata.yml for you to commit; `fanbase cite` uses it from then on, and it
+does not make the spec a changed one (a DOI is not a new version of the grammar).
+
 ### The private record of crashes and hangs
 
 Hiding a crash from a public report is not the same as losing it: whoever runs the evaluation is the one who has to
