@@ -54,12 +54,17 @@ KEY_ORDER = ("format", "kind", "description", "fanbase", "fandango", "requires")
 #   extends       specs it builds on, as refs (`png`, `png/png-apng`)
 #   derived_from  the spec it was forked from, as a ref
 #   derived_sha256  the hash of that spec's file when it was forked: what `rebase` merges from
+#   derived_meta  what the original's extends, fandango, pip and extensions were when it was forked: what
+#                 `rebase` merges the original's changes of them from
 #   status        draft, stable or deprecated
 #   doi           the DOI of an archived copy (Zenodo)
 #   decodes       how often its files are meant to be accepted by a parser: always, mostly, rarely or never
 #   targets       the targets to evaluate it against, instead of its format's
-OPTIONAL_KEYS = ("authors", "license", "source", "extends", "derived_from", "derived_sha256", "status", "doi",
-                 "decodes", "targets")
+OPTIONAL_KEYS = ("authors", "license", "source", "extends", "derived_from", "derived_sha256", "derived_meta",
+                 "status", "doi", "decodes", "targets")
+# What of a spec's metadata a fork usually keeps from its original, and `rebase` therefore merges.
+MERGEABLE_KEYS = ("extends", "fandango", "pip", "extensions")
+_LIST_KEYS = ("extends", "pip", "extensions")
 STATUSES = ("draft", "stable", "deprecated")
 DECODES = ("always", "mostly", "rarely", "never")
 
@@ -118,6 +123,16 @@ def check_metadata(meta: dict) -> list[str]:
         isinstance(meta["derived_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", meta["derived_sha256"])
     ):
         problems.append("derived_sha256: expected the 64 hex digits of a SHA-256")
+    if "derived_meta" in meta:
+        base = meta["derived_meta"]
+        if not isinstance(base, dict) or any(key not in MERGEABLE_KEYS for key in base):
+            problems.append(f"derived_meta: expected a mapping with some of {', '.join(MERGEABLE_KEYS)}")
+        else:
+            for key, value in base.items():
+                if key in _LIST_KEYS and not (isinstance(value, list) and all(_is_text(v) for v in value)):
+                    problems.append(f"derived_meta: {key}: expected a list of text")
+                elif key not in _LIST_KEYS and not _is_text(value):
+                    problems.append(f"derived_meta: {key}: expected text")
     if "decodes" in meta and meta["decodes"] not in DECODES:
         problems.append(f"decodes: {meta['decodes']!r} is not one of {', '.join(DECODES)}")
     if "targets" in meta and not (

@@ -340,6 +340,23 @@ def test_it_says_when_the_original_now_extends_something_else(capsys, tmp_path, 
     republish(up, "png", version="1.1", extends=["png-base"], fandango=">=1.4")
     code, out, _ = rebase(capsys, mine, up)
     assert code == 0
+    assert "metadata: extends: the original now adds 'fanbase:png-base'" in out  # (see test_rebase_meta for the rest)
+    assert "metadata: fandango: the original changed it from '>=1.3' to '>=1.4', and you did not" in out
+    assert meta(mine, "png-mine").get("extends") is None  # not at a terminal, nothing is changed behind your back
+
+
+def test_a_fork_from_before_it_kept_what_the_original_said_is_only_told_what_differs(capsys, tmp_path, up, mine):
+    run(capsys, "--registry", str(up), "new", "png-base", "--description", "base")
+    run(capsys, "--registry", str(up), "fork", "png", "--as", "png-mine", "--into", str(mine))
+    forked_meta = mine / "specs/png/png-mine/metadata.yml"
+    data = yaml.safe_load(forked_meta.read_text())
+    del data["derived_meta"]  # as forks made by an earlier fanbase are
+    forked_meta.write_text(yaml.safe_dump(data, sort_keys=False))
+    republish(mine, "gif")
+    put(up, "png", spec_text({9: "# line 9, theirs"}))
+    republish(up, "png", version="1.1", extends=["png-base"], fandango=">=1.4")
+    code, out, _ = rebase(capsys, mine, up)
+    assert code == 0
     assert "note: the original now extends ['fanbase:png-base'], and the fork extends nothing" in out
     assert "note: the original's fandango is '>=1.4'" in out
     assert meta(mine, "png-mine").get("extends") is None  # the fork's metadata is the fork's own

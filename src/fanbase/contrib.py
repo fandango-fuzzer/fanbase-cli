@@ -6,6 +6,7 @@ your own), which is where `fanbase publish` takes the change to a pull request.
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import shutil
@@ -33,7 +34,7 @@ from fanbase.manager import (
     spec_path,
     split_ref,
 )
-from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
+from fanbase.manifest import INDEX_FILENAME, MERGEABLE_KEYS, dump_index, index_is_stale, reindex
 from fanbase.output import clean
 from fanbase.bases import save_base, sha256
 from fanbase.registry import (
@@ -301,6 +302,8 @@ def _write_fork(fork: _Fork, target: Registry, owner: str, include_map: dict[str
     meta.update(derived_from=f"{where}@{version}" if version is not None else where, version="0.1", status="draft")
     raw = source.read(entry)
     meta["derived_sha256"] = sha256(raw)
+    if base := {key: copy.deepcopy(entry.meta[key]) for key in MERGEABLE_KEYS if entry.meta.get(key) is not None}:
+        meta["derived_meta"] = base  # what the original said then: `rebase` merges what it says later from this
     written = rewrite_includes(raw, include_map) if include_map else raw  # the bytes as they are, unless an include moves
 
     folder = target.specs_dir / entry.format / kind

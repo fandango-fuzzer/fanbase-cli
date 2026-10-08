@@ -608,6 +608,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ref", help="the fork, e.g. png-mine")
     p.add_argument("--upstream", metavar="REGISTRY", help="read the original from here (a URL, or the path of a checkout), instead of where derived_from says")
     p.add_argument("--base-registry", metavar="REGISTRY", help="a release of the registry from the time of the fork, if it can no longer be found otherwise")
+    p.add_argument("--metadata", choices=("ask", "adopt", "keep"), default="ask",
+                   help="what the original changed in extends, fandango, pip and extensions: adopt it, keep your own, or (default) ask if you are at a terminal and else only say")
+    p.add_argument("--adopt", metavar="KEYS", help="take the original's current value of these keys (some of extends,fandango,pip,extensions), whatever the fork has")
     p.add_argument("--dry-run", action="store_true", help="say whether it merges cleanly, and write nothing")
     p.set_defaults(fn=cmd_rebase, local=True)
 

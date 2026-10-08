@@ -237,8 +237,15 @@ fanbase publish                  # branch, commit, push, and a pull request (nee
   which it finds, checking its hash against the `derived_sha256` that `fork` recorded, in the copy `fork` kept
   (in `$FANBASE_CACHE`, else `~/.cache/fanbase`), in the git history of your clone, or in an older release of the
   registry that you name with `--base-registry`. `--dry-run` says whether it merges cleanly and writes nothing.
-  It does not touch your `metadata.yml` beyond `derived_from` and `derived_sha256`, but says if the original's
-  `extends`, Fandango range or file types now differ from yours. Give the fork a new `version` afterwards.
+  Your `metadata.yml` is merged the same way for the four keys a fork usually keeps from its original,
+  `extends`, `fandango`, `pip` and `extensions`: `fork` records what the original said then (`derived_meta`), so
+  `rebase` knows what the original changed since. A list gets the original's additions and loses what the original
+  dropped, whatever you added of your own; a value is taken if only the original changed it, and is said to be in
+  conflict, and left as yours, if you both did. It is offered, not done behind your back: at a terminal it asks;
+  otherwise it says what it would change and how to take it (`--metadata adopt`, or `--metadata keep` to leave it
+  out for good). For a fork made before `derived_meta` existed, `--adopt fandango,extends` takes the original's
+  current value of those keys, and from then on the original's words are recorded. `license` and `mime` are only
+  told when they differ. Give the fork a new `version` afterwards.
 - `check [SPEC...]` verifies that `metadata.yml` and `index.yml` are up to date, that what specs extend
   exists, and that each spec makes Fandango produce inputs (it needs `fandango` installed; `--count N`,
   `--timeout S`, `--no-generate`). The Python packages a spec imports are installed first, as `fandango -F`
