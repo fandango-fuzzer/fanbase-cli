@@ -120,7 +120,7 @@ def test_every_progress_line_is_whole(capsys, reg, monkeypatch):
 def test_packages_are_installed_one_spec_at_a_time(capsys, reg, monkeypatch):
     slow(monkeypatch, delay=0.05)
     for fmt, kind in (("png", "png"), ("gif", "gif"), ("bmp", "bmp"), ("tiff", "tiff")):
-        (reg / "specs" / fmt / kind / f"{kind}.fan").write_text(f"import fanbase_test_module_{kind}\n<start> ::= '{kind}'\n")
+        (reg / "specs" / fmt / kind / f"{kind}.fan").write_text(f"import fanbase_test_module_{kind}\n<start> ::= '{kind}'\n", newline="\n")
         republish(reg, kind)
     state = {"now": 0, "most": 0, "calls": 0}
     lock = threading.Lock()
@@ -168,7 +168,7 @@ def test_nothing_changed_is_said_and_is_fine(capsys, reg, before, monkeypatch):
 
 def test_changed_still_looks_at_the_whole_registrys_order(capsys, reg, before, monkeypatch):
     slow(monkeypatch)
-    (reg / "specs/gif/gif/gif.fan").write_text("<start> ::= 'gif quietly'\n")  # not reindexed; and not what changed in the PR's eyes
+    (reg / "specs/gif/gif/gif.fan").write_text("<start> ::= 'gif quietly'\n", newline="\n")  # not reindexed; and not what changed in the PR's eyes
     code, out, _ = run(capsys, "--registry", str(reg), "check", "--changed", "--base", str(before), "--no-generate")
     assert code == 1 and "index.yml is out of date" in out
 

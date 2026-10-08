@@ -137,7 +137,7 @@ def test_check_metadata_reports_every_problem():
 
 def test_an_invalid_spec_leaves_the_registry_untouched(capsys, registry):
     # gif would be refreshed (it now imports something), but png-apng is invalid: write nothing.
-    (registry / "specs/gif/gif/gif.fan").write_text("import brotli\n<start> ::= 'gif'\n")
+    (registry / "specs/gif/gif/gif.fan").write_text("import brotli\n<start> ::= 'gif'\n", newline="\n")
     before = (registry / "specs/gif/gif/metadata.yml").read_text()
     edit_metadata(registry, "png-apng", status="nonsense")
     code, _, err = run(capsys, "--registry", str(registry), "reindex")

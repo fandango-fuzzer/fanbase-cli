@@ -219,7 +219,7 @@ def test_list_installed_can_be_narrowed_to_a_registry(capsys, registry, added, r
 
 def test_update_goes_back_to_the_registry_each_spec_came_from(capsys, registry, added, root):
     run(capsys, "--registry", str(registry), "install", "png", "acme:png-strict")
-    (added / "specs/png/png-strict/png-strict.fan").write_text("<start> ::= 'stricter'\n")
+    (added / "specs/png/png-strict/png-strict.fan").write_text("<start> ::= 'stricter'\n", newline="\n")
     from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
     from fanbase.registry import Registry
 
@@ -422,7 +422,7 @@ def test_a_registry_added_by_url_installs_over_http(capsys, acme, root, tmp_path
         code, out, _ = run(capsys, "--registry", str(acme), "install", "acme:png-strict")
         assert code == 0 and spec_path(root, "png", "png-strict", "acme").is_file()
         # and it is checked against the hash in the index
-        (acme / "specs/png/png-strict/png-strict.fan").write_text("<start> ::= 'tampered'\n")
+        (acme / "specs/png/png-strict/png-strict.fan").write_text("<start> ::= 'tampered'\n", newline="\n")
         run(capsys, "uninstall", "acme:png-strict")
         code, _, err = run(capsys, "--registry", str(acme), "install", "acme:png-strict")
         assert code == 2 and "does not match index.yml" in err

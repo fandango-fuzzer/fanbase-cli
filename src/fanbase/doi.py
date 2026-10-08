@@ -205,7 +205,7 @@ def write_doi(reg: Registry, entry: Entry, doi: str) -> None:
     meta_file = (reg.root / entry.path).with_name("metadata.yml")
     data = yaml.safe_load(meta_file.read_text(encoding="utf-8")) or {}
     data["doi"] = doi
-    meta_file.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    meta_file.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
     refresh(reg)
 
 
@@ -249,5 +249,5 @@ def cmd_doi(args, ctx: Context) -> int:
         print("this was the sandbox: the DOI is not real and nothing was written into the registry")
         return 0
     write_doi(reg, entry, doi)
-    print(f"wrote doi: {doi} into {(reg.root / entry.path).with_name('metadata.yml').relative_to(reg.root)}: commit it")
+    print(f"wrote doi: {doi} into {(reg.root / entry.path).with_name('metadata.yml').relative_to(reg.root).as_posix()}: commit it")
     return 0

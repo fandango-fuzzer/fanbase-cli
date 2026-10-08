@@ -36,7 +36,7 @@ def reg(tmp_path):
     (root / "specs/png/format.yml").write_text(yaml.safe_dump({"title": "Portable Network Graphics", "mime": "image/png",
                                                                "reference": "https://www.w3.org/TR/png-3/"}))
     (root / "specs/gif/format.yml").write_text(yaml.safe_dump({"reference": "javascript:alert(2)"}))
-    (root / "specs/png/png-apng/png-apng.fan").write_text('include("png/png.fan")\n<start> ::= <png>  # ' + EVIL + "\n")
+    (root / "specs/png/png-apng/png-apng.fan").write_text('include("png/png.fan")\n<start> ::= <png>  # ' + EVIL + "\n", newline="\n")
     republish(root, "png-apng")
     return root
 
@@ -79,7 +79,7 @@ def test_a_site_of_pages(capsys, reg, tmp_path):
     out = tmp_path / "site"
     code, stdout, _ = build(capsys, reg, out)
     assert code == 0 and "7 pages in" in stdout
-    names = sorted(str(p.relative_to(out)) for p in out.rglob("*") if p.is_file())
+    names = sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
     assert names == [".fanbase-site", "gif/gif.html", "gif/index.html", "index.html", "index.json", "png/index.html", "png/png-apng.html",
                      "png/png-evil.html", "png/png.html", "site.js", "style.css"]
 

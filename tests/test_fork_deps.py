@@ -29,7 +29,7 @@ def text(reg, kind):
 
 
 def write_text(reg, kind, content):
-    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(content)
+    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(content, newline="\n")
     republish(reg, kind)
 
 

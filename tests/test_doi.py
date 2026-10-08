@@ -263,7 +263,7 @@ def test_a_draft_can_be_done_if_asked(capsys, reg, zenodo):
 
 
 def test_a_stale_registry_is_refused(capsys, reg, zenodo):
-    (reg / "specs/png/png-apng/png-apng.fan").write_text("import brotli\n<start> ::= 'x'\n")  # not reindexed
+    (reg / "specs/png/png-apng/png-apng.fan").write_text("import brotli\n<start> ::= 'x'\n", newline="\n")  # not reindexed
     code, _, err = doi(capsys, reg, zenodo, "--sandbox")
     assert code == 2 and "its metadata.yml is out of date" in err and zenodo.calls == []
 

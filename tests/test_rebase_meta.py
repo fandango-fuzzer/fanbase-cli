@@ -55,7 +55,7 @@ def run_quiet(reg):
 
 def fan_text(reg, kind, lines=None):
     body = "\n".join((lines or {}).get(i, f"# line {i}") for i in range(1, 11))
-    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(body + "\n<start> ::= 'png'\n")
+    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(body + "\n<start> ::= 'png'\n", newline="\n")
     republish(reg, kind)
 
 

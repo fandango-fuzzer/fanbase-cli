@@ -264,7 +264,7 @@ def test_check_of_a_registry_in_order(capsys, reg):
 
 
 def test_check_notices_a_stale_registry(capsys, reg):
-    (reg / "specs/gif/gif/gif.fan").write_text("import brotli\n<start> ::= 'gif'\n")
+    (reg / "specs/gif/gif/gif.fan").write_text("import brotli\n<start> ::= 'gif'\n", newline="\n")
     code, out, _ = run(capsys, "--registry", str(reg), "check", "--no-generate")
     assert code == 1 and "FAILED:  gif/gif: metadata.yml is out of date" in out and "index.yml is out of date" in out
     run(capsys, "--registry", str(reg), "reindex")
@@ -315,7 +315,7 @@ class FakeFandango:
         library = kwargs["env"]["FANDANGO_PATH"]
         import pathlib
 
-        self.calls.append({"cmd": cmd, "library": library, "has": sorted(str(p.relative_to(library)) for p in pathlib.Path(library).rglob("*.fan"))})
+        self.calls.append({"cmd": cmd, "library": library, "has": sorted(p.relative_to(library).as_posix() for p in pathlib.Path(library).rglob("*.fan"))})
         if self.timeout:
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
         out = pathlib.Path(cmd[cmd.index("-d") + 1])
@@ -383,11 +383,11 @@ def test_check_leaves_no_temporary_files(capsys, reg, fake, tmp_path):
 def test_check_with_the_real_fandango(capsys, tmp_path, monkeypatch):
     monkeypatch.setattr(contrib, "_run", REAL_RUN)
     reg = build_registry(tmp_path / "real", {("txt", "txt"): dict(version="1.0", description="x", authors=["a"], license="MIT")})
-    (reg / "specs/txt/txt/txt.fan").write_text('<start> ::= "hello" | "world" | "again"\n')
+    (reg / "specs/txt/txt/txt.fan").write_text('<start> ::= "hello" | "world" | "again"\n', newline="\n")
     run(capsys, "--registry", str(reg), "reindex")
     code, out, err = run(capsys, "--registry", str(reg), "check", "--count", "1")
     assert code == 0 and "1 produced inputs" in out, out + err
-    (reg / "specs/txt/txt/txt.fan").write_text("<start> ::= <nothing>\n")
+    (reg / "specs/txt/txt/txt.fan").write_text("<start> ::= <nothing>\n", newline="\n")
     run(capsys, "--registry", str(reg), "reindex")
     code, out, _ = run(capsys, "--registry", str(reg), "check", "--count", "1")
     assert code == 1 and "FAILED:  txt/txt: fandango failed" in out
@@ -396,7 +396,7 @@ def test_check_with_the_real_fandango(capsys, tmp_path, monkeypatch):
 # --- fork: which registry a spec came from
 
 def write_text(reg, kind, text):
-    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(text)
+    (reg / "specs" / kind.split("-")[0] / kind / f"{kind}.fan").write_text(text, newline="\n")
     republish(reg, kind)
 
 
@@ -461,7 +461,7 @@ NEEDS = "fanbase_test_module_that_is_not_installed"
 def needing(reg, kind="gif"):
     """The spec imports a package that is not installed."""
     fmt = kind.split("-")[0]
-    (reg / "specs" / fmt / kind / f"{kind}.fan").write_text(f"import {NEEDS}\n<start> ::= '{kind}'\n")
+    (reg / "specs" / fmt / kind / f"{kind}.fan").write_text(f"import {NEEDS}\n<start> ::= '{kind}'\n", newline="\n")
     republish(reg, kind)
 
 

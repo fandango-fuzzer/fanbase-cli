@@ -235,8 +235,23 @@ def test_a_target_that_does_not_exist_or_is_not_one(tmp_path):
 
 
 def test_the_placeholders_are_filled_in(tmp_path):
-    target = make(tmp_path, "paths", run=["{python}", "-c", "import sys; sys.exit(0 if sys.argv[1:] == ['{dir}', sys.argv[2]] else 1)", "{dir}", "{file}"])
+    # {dir} is the target's folder (it has the target.yml) and {file} the file asked about. The paths are arguments, never
+    # part of the source: a Windows path has backslashes in it.
+    script = "import os, sys; sys.exit(0 if os.path.isfile(os.path.join(sys.argv[1], 'target.yml')) and os.path.isfile(sys.argv[2]) else 1)"
+    target = make(tmp_path, "paths", run=["{python}", "-c", script, "{dir}", "{file}"])
     assert judge(target, sample(tmp_path)).category == ACCEPTED
+
+
+def test_a_command_that_cannot_be_started_is_an_error_whatever_the_system(tmp_path, monkeypatch):
+    # On POSIX a limits wrapper starts the command and a missing one is exit status 127; on Windows starting it fails
+    # outright. Either way it is the target that is broken, and evaluating the other targets goes on.
+    def refuse(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr("fanbase.targets.subprocess.run", refuse)
+    target = make(tmp_path, "ghost", run=["definitely-not-a-command-xyz", "{file}"])
+    verdict = judge(target, sample(tmp_path))
+    assert verdict.category == ERROR and verdict.reason.startswith("cannot run ")
 
 
 def test_addresses_in_memory_do_not_make_reasons_differ(tmp_path):

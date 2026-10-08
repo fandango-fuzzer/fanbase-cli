@@ -295,7 +295,7 @@ def test_an_original_that_is_gone(capsys, forked, up):
     from fanbase.registry import Registry
 
     (up / "specs/gif/gif").mkdir(parents=True)
-    (up / "specs/gif/gif/gif.fan").write_text("<start> ::= 'gif'\n")
+    (up / "specs/gif/gif/gif.fan").write_text("<start> ::= 'gif'\n", newline="\n")
     rows, _, _ = reindex(Registry(up))
     (up / INDEX_FILENAME).write_text(dump_index(rows))
     code, _, err = rebase(capsys, forked, up)

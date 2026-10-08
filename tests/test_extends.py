@@ -102,7 +102,7 @@ def test_ensure_installs_what_the_spec_extends(layered, root, pip_calls):
 def test_ensure_installs_the_requirements_of_what_it_extends(layered, root, pip_calls):
     (layered / "specs/png/png/png.fan").write_text(
         "import fanbase_test_module_that_is_not_installed\n<start> ::= 'png'\n"
-    )
+    , newline="\n")
     rows, _, _ = reindex(Registry(layered))
     (layered / INDEX_FILENAME).write_text(dump_index(rows))
     ensure("png-apng", Registry(layered), root)
@@ -111,7 +111,7 @@ def test_ensure_installs_the_requirements_of_what_it_extends(layered, root, pip_
 
 def test_update_brings_what_a_spec_extends_up_to_date(capsys, layered, root):
     run(capsys, "--registry", str(layered), "install", "png-apng")
-    (layered / "specs/png/png/png.fan").write_text("<start> ::= 'new png'\n")
+    (layered / "specs/png/png/png.fan").write_text("<start> ::= 'new png'\n", newline="\n")
     rows, _, _ = reindex(Registry(layered))
     (layered / INDEX_FILENAME).write_text(dump_index(rows))
     _, out, _ = run(capsys, "--registry", str(layered), "update")

@@ -235,7 +235,7 @@ def reindex(registry: Registry, *, write: bool = True) -> tuple[list[dict], list
         current = target.read_text(encoding="utf-8") if target.exists() else None
         if write:
             if current != text:
-                target.write_text(text, encoding="utf-8")
+                target.write_text(text, encoding="utf-8", newline="\n")
                 changed.append(entry)
         elif current is None or _without_stamp(current) != _without_stamp(text):
             changed.append(entry)

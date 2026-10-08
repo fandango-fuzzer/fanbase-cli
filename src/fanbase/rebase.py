@@ -282,11 +282,11 @@ def cmd_rebase(args, ctx: Context) -> int:
         meta["derived_meta"] = {k: copy.deepcopy(original.meta[k]) for k in MERGEABLE_KEYS if original.meta.get(k) is not None}
     try:
         fan.write_bytes(merged)
-        meta_file.write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        meta_file.write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
         refresh(reg)
     except RegistryError as exc:  # e.g. an adopted `extends` names a spec this registry does not have
         fan.write_bytes(before[0])
-        meta_file.write_text(before[1], encoding="utf-8")
+        meta_file.write_text(before[1], encoding="utf-8", newline="\n")
         raise RegistryError(f"{exc}; nothing was changed") from None
     if file_changed:
         save_base(theirs)  # the next rebase starts from here
