@@ -368,3 +368,20 @@ def test_names():
     assert doi_module._family_first("Grace Hopper") == "Hopper, Grace"
     assert doi_module._family_first("Ada Byron King Lovelace") == "Lovelace, Ada Byron King"
     assert doi_module._family_first("Hopper, Grace") == "Hopper, Grace" and doi_module._family_first("Plato") == "Plato"
+
+
+def test_a_team_is_not_a_person_with_a_family_name(capsys, reg, zenodo):
+    republish(reg, "png-apng", authors=["The Fandango Fuzzer Team", "Grace Hopper"])
+    code, out, _ = doi(capsys, reg, zenodo, "--sandbox")
+    assert code == 0 and [c["name"] for c in zenodo.metadata["creators"]] == ["The Fandango Fuzzer Team", "Hopper, Grace"]
+    assert "creators: The Fandango Fuzzer Team; Hopper, Grace" in out
+
+
+def test_what_is_a_group():
+    from fanbase.discover import bib_author, is_group
+
+    for name in ("The Fandango Fuzzer Team", "CISPA Helmholtz Center", "Acme Fuzzing Group", "Fanbase contributors", "Acme GmbH"):
+        assert is_group(name), name
+    for name in ("Grace Hopper", "Ada Lovelace", "Andreas Zeller", "Teamster Jones"):
+        assert not is_group(name), name
+    assert bib_author("The Fandango Fuzzer Team") == "{The Fandango Fuzzer Team}" and bib_author("Grace Hopper") == "Grace Hopper"

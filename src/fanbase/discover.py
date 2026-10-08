@@ -149,6 +149,21 @@ def _bib(text: object) -> str:
     return _BIBTEX_SPECIAL.sub(r"\\\1", _BIBTEX_UNSAFE.sub("", str(text)))
 
 
+# "The Fandango Fuzzer Team" is not a person with a family name: a name like that is written as it is.
+_GROUP = re.compile(r"^the\b|\b(team|group|project|lab|labs|consortium|community|contributors|university|institute|"
+                    r"centre|center|foundation|gmbh|inc|ltd|llc)\b", re.IGNORECASE)
+
+
+def is_group(name: str) -> bool:
+    """Does this name a team, a project or an institution rather than a person?"""
+    return _GROUP.search(name) is not None
+
+
+def bib_author(name: str) -> str:
+    """An author for BibTeX: a group in braces, so that it is not read as a first and a last name."""
+    return "{" + _bib(name) + "}" if is_group(name) else _bib(name)
+
+
 def _author_names(meta: dict) -> list[str]:
     names = []
     for author in meta.get("authors") or []:
@@ -184,7 +199,7 @@ def cmd_cite(args, ctx: Context) -> int:
     elif args.bibtex:
         key = re.sub(r"[^A-Za-z0-9]+", "_", f"fanbase_{c['spec']}_{c['version'] or ''}").strip("_")
         fields = [
-            ("author", " and ".join(_bib(a) for a in c["authors"])),
+            ("author", " and ".join(bib_author(a) for a in c["authors"])),
             ("title", f"{_bib(c['title'])} ({_bib(c['spec'])}), a Fandango input specification"),
             ("version", _bib(c["version"]) if c["version"] else None),
             ("doi", c["doi"]),

@@ -24,7 +24,7 @@ from fanbase import __version__, quality as quality_results
 from fanbase.context import Context
 from fanbase.contrib import checkout
 from fanbase.deps import dependencies, self_names
-from fanbase.discover import _author_names, _bib
+from fanbase.discover import _author_names, _bib, bib_author
 from fanbase.manager import entry_sha
 from fanbase.output import clean
 from fanbase.registry import DEFAULT_REGISTRY_NAME, Entry, Registry, RegistryError, split_prefix
@@ -297,7 +297,7 @@ class Site:
         doi = meta.get("doi") if isinstance(meta.get("doi"), str) else None
         url = f"https://doi.org/{doi}" if doi else (self.repo or "")
         key = re.sub(r"[^A-Za-z0-9]+", "_", f"fanbase_{e}_{meta.get('version') or ''}").strip("_")
-        fields = [("author", " and ".join(_bib(a) for a in authors)),
+        fields = [("author", " and ".join(bib_author(a) for a in authors)),
                   ("title", f"{_bib(meta.get('title') or e.kind)} ({_bib(e)}), a Fandango input specification"),
                   ("version", _bib(meta["version"]) if meta.get("version") is not None else None),
                   ("doi", doi), ("url", url or None), ("note", f"Fanbase registry, {_bib(e.path)}, sha256 {entry_sha(self.reg, e)[:12]}")]

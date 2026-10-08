@@ -29,6 +29,7 @@ import yaml
 
 from fanbase.context import Context
 from fanbase.contrib import checkout, refresh
+from fanbase.discover import is_group
 from fanbase.manifest import reindex
 from fanbase.output import clean
 from fanbase.registry import Entry, Registry, RegistryError
@@ -68,7 +69,7 @@ def _creators(authors: object) -> list[dict]:
         name = author.get("name") if isinstance(author, dict) else author
         if not (isinstance(name, str) and name.strip()):
             continue
-        creator = {"name": _family_first(name)}
+        creator = {"name": " ".join(name.split()) if is_group(name) else _family_first(name)}
         if isinstance(author, dict) and isinstance(author.get("orcid"), str):
             creator["orcid"] = author["orcid"]
         if isinstance(author, dict) and isinstance(author.get("affiliation"), str):

@@ -237,3 +237,9 @@ def test_json_does_not_hide_control_characters_but_escapes_them(capsys, reg):
     republish(reg, "png", description="bad \x1b[2J news")
     _, out, _ = run(capsys, "--registry", str(reg), "search", "bad", "--json")
     assert "\x1b" not in out and "\\u001b" in out and json.loads(out)[0]["description"] == "bad \x1b[2J news"
+
+
+def test_a_team_is_cited_as_one_author(capsys, reg):
+    republish(reg, "png", authors=["The Fandango Fuzzer Team"])
+    _, out, _ = run(capsys, "--registry", str(reg), "cite", "png", "--bibtex")
+    assert "author  = {{The Fandango Fuzzer Team}}," in out  # (the inner braces keep BibTeX from reading Team as a family name)
