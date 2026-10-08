@@ -8,7 +8,7 @@ import tarfile
 import pytest
 import yaml
 from conftest import build_registry
-from helpers import REAL_RUN, STRICT, FakeAge, FakeFandango, settle, target
+from helpers import CRASH_SIGNAL, REAL_RUN, STRICT, FakeAge, FakeFandango, settle, target
 
 from fanbase import contrib, incidents
 from fanbase.cli import main
@@ -19,7 +19,7 @@ needs_age = pytest.mark.skipif(shutil.which("age") is None or shutil.which("age-
 
 SECRET_STDERR = "SECRET-STDERR-MARKER the parser said this"
 SECRET_INPUT = b"SECRET-INPUT-MARKER"
-CRASH = f"import os, signal, sys\nprint({SECRET_STDERR!r}, file=sys.stderr, flush=True)\nos.kill(os.getpid(), signal.SIGSEGV)\n"
+CRASH = f"import os, signal, sys\nprint({SECRET_STDERR!r}, file=sys.stderr, flush=True)\nos.kill(os.getpid(), signal.{CRASH_SIGNAL})\n"
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +92,7 @@ def test_a_crash_is_written_down_with_everything_needed_to_report_it(capsys, cra
     folder, = (tmp_path / "private").glob("incidents-*")
     manifest = json.loads((folder / "manifest.json").read_text())
     incident, = manifest["incidents"]
-    assert (incident["kind"], incident["target"], incident["signal"], incident["spec"]) == ("crash", "crasher", "SIGSEGV", "png/png")
+    assert (incident["kind"], incident["target"], incident["signal"], incident["spec"]) == ("crash", "crasher", CRASH_SIGNAL, "png/png")
     assert incident["occurrences"] == 4 and incident["confirmed"] == 4  # it happens again when tried once more
     assert incident["spec_version"] == "1.0" and len(incident["spec_sha256"]) == 64 and incident["command"][-1] == "INPUT"
     assert manifest["seed"] == 1 and manifest["count"] == 4 and manifest["fandango"]
@@ -100,7 +100,7 @@ def test_a_crash_is_written_down_with_everything_needed_to_report_it(capsys, cra
     assert 1 <= len(inputs) <= 3 and all(p.read_bytes().startswith(SECRET_INPUT) for p in inputs)
     assert SECRET_STDERR in (folder / incident["id"] / "stderr.txt").read_text()
     report = (folder / incident["id"] / "REPORT.md").read_text()
-    assert "killed by SIGSEGV" in report and "Before you report it" in report and "ETHICS.md" in report and "90 days" in report
+    assert f"killed by {CRASH_SIGNAL}" in report and "Before you report it" in report and "ETHICS.md" in report and "90 days" in report
     assert "4 time(s)" in report
 
 
@@ -213,7 +213,7 @@ def test_with_a_key_nothing_is_printed_and_the_record_is_encrypted(capsys, crash
                               "--json-file", str(tmp_path / "e.json"))
     public = out + err + (tmp_path / "e.json").read_text()
     assert code == 0
-    for secret in (SECRET_STDERR, SECRET_INPUT.decode(), "SIGSEGV", "killed by", "fanbase-check-", "fanbase-targets-", "hang"):
+    for secret in (SECRET_STDERR, SECRET_INPUT.decode(), CRASH_SIGNAL, "killed by", "fanbase-check-", "fanbase-targets-", "hang"):
         assert secret not in public, secret
     assert "private record:" in err
     assert sorted(p.name for p in out_dir.iterdir()) == [BUNDLE_NAME]  # only the encrypted file; nothing in the clear
@@ -234,7 +234,7 @@ def test_what_is_encrypted_is_the_record(capsys, crashing, fandango, age, recipi
     assert "manifest.json" in names and "REPORT.md" in names
     assert any(n.endswith("/stderr.txt") for n in names) and any("/input-" in n for n in names)
     member = tar_of(age.plaintexts[-1]).extractfile("manifest.json")
-    assert json.loads(member.read())["incidents"][0]["signal"] == "SIGSEGV"
+    assert json.loads(member.read())["incidents"][0]["signal"] == CRASH_SIGNAL
 
 
 @posix
@@ -331,7 +331,7 @@ def test_the_record_can_be_read_with_the_private_key_and_only_with_it(capsys, cr
     opened = REAL_RUN(["age", "-d", "-i", str(keys), str(bundle)], check=True, capture_output=True).stdout
     assert len(opened) % PAD == 0
     manifest = json.loads(tar_of(opened).extractfile("manifest.json").read())
-    assert manifest["incidents"][0]["signal"] == "SIGSEGV"
+    assert manifest["incidents"][0]["signal"] == CRASH_SIGNAL
     wrong = REAL_RUN(["age", "-d", "-i", str(other), str(bundle)], capture_output=True)
     assert wrong.returncode != 0 and wrong.stdout == b""  # and nobody else can
 
@@ -352,7 +352,7 @@ def test_the_real_record_of_a_quiet_run_is_as_big_as_a_loud_one(capsys, reg, cra
 COUNT_CRASH = (  # a different message for each of ten files, so each is a cause of its own
     "import os, pathlib, signal, sys\n"
     "print('message', pathlib.Path(sys.argv[1]).read_bytes()[-1:].decode(), file=sys.stderr, flush=True)\n"
-    "os.kill(os.getpid(), signal.SIGSEGV)\n"
+    f"os.kill(os.getpid(), signal.{CRASH_SIGNAL})\n"
 )
 
 

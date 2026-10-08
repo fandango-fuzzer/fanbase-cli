@@ -6,7 +6,7 @@ import sys
 import pytest
 import yaml
 from conftest import build_registry, republish
-from helpers import ACCEPT, REAL_RUN, STRICT, FakeFandango, settle, target
+from helpers import CRASH_SIGNAL, ACCEPT, REAL_RUN, STRICT, FakeFandango, settle, target
 
 from fanbase import contrib
 from fanbase.cli import main
@@ -242,7 +242,7 @@ def test_without_fandango(capsys, reg, monkeypatch):
 
 @pytest.fixture
 def crashing(reg):
-    target(reg, "crasher", "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+    target(reg, "crasher", f"import os, signal\nos.kill(os.getpid(), signal.{CRASH_SIGNAL})\n")
     (reg / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["strict", "crasher"]}))
     settle(reg)
     return reg
@@ -252,14 +252,14 @@ def crashing(reg):
 def test_a_crash_is_counted_and_said(capsys, crashing, fake):
     _, out, _ = evaluate(capsys, crashing, "png", "-n", "4", "--json")
     crasher = next(t for t in json.loads(out)["specs"][0]["targets"] if t["name"] == "crasher")
-    assert crasher["categories"]["crash"] == 4 and crasher["reasons"] == [["crash: killed by SIGSEGV", 4]]
+    assert crasher["categories"]["crash"] == 4 and crasher["reasons"] == [[f"crash: killed by {CRASH_SIGNAL}", 4]]
 
 
 @posix
 def test_for_a_public_report_it_is_not(capsys, crashing, fake):
     for flags in (["--json"], ["--markdown"], []):
         _, out, _ = evaluate(capsys, crashing, "png", "-n", "4", "--hide-crashes", *flags)
-        assert "SIGSEGV" not in out and "killed by" not in out and "crash:" not in out
+        assert CRASH_SIGNAL not in out and "killed by" not in out and "crash:" not in out
     _, out, _ = evaluate(capsys, crashing, "png", "-n", "4", "--hide-crashes", "--json")
     crasher = next(t for t in json.loads(out)["specs"][0]["targets"] if t["name"] == "crasher")
     assert crasher["categories"]["crash"] == 0 and crasher["categories"]["error"] == 4 and crasher["reasons"] == []

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from conftest import build_registry
-from helpers import REAL_RUN, STRICT, FakeAge, FakeFandango, settle, target
+from helpers import CRASH_SIGNAL, REAL_RUN, STRICT, FakeAge, FakeFandango, settle, target
 
 from fanbase import contrib, incident_cmds, incidents
 from fanbase.cli import main
@@ -21,7 +21,7 @@ posix = pytest.mark.skipif(sys.platform == "win32", reason="signals and modes ar
 needs_age = pytest.mark.skipif(shutil.which("age") is None or shutil.which("age-keygen") is None, reason="age is not installed")
 
 SECRET_STDERR = "SECRET-STDERR-MARKER the parser said this"
-CRASH = f"import os, signal, sys\nprint({SECRET_STDERR!r}, file=sys.stderr, flush=True)\nos.kill(os.getpid(), signal.SIGSEGV)\n"
+CRASH = f"import os, signal, sys\nprint({SECRET_STDERR!r}, file=sys.stderr, flush=True)\nos.kill(os.getpid(), signal.{CRASH_SIGNAL})\n"
 
 HOST, USER, PASSWORD, FROM, TO = "smtp.secret-host.example", "secret-user", "hunter2-PASSWORD", "sender@secret-from.example", "reader@secret-to.example"
 
@@ -566,7 +566,7 @@ def test_an_evaluation_is_opened_with_the_private_key_and_mailed_as_it_is(capsys
     assert code == 0 and "1 incident(s)" in out
     manifest = json.loads((tmp_path / "opened" / "manifest.json").read_text())
     incident, = manifest["incidents"]
-    assert incident["signal"] == "SIGSEGV" and incident["occurrences"] == 4
+    assert incident["signal"] == CRASH_SIGNAL and incident["occurrences"] == 4
     assert SECRET_STDERR in (tmp_path / "opened" / incident["id"] / "stderr.txt").read_text()
     assert (tmp_path / "opened" / incident["id"] / "input-1.bin").read_bytes().startswith(b"INPUT-")
     assert (tmp_path / "opened" / "REPORT.md").is_file()

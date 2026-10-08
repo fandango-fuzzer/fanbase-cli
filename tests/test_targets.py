@@ -2,6 +2,7 @@ import subprocess
 import sys
 
 import pytest
+from helpers import CRASH_SIGNAL
 import yaml
 
 from fanbase import targets
@@ -101,9 +102,9 @@ def test_a_command_that_is_not_there_is_an_error_not_a_rejection(tmp_path):
 
 @posix
 def test_a_crash_is_a_crash(tmp_path):
-    target = make(tmp_path, "crasher", "import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+    target = make(tmp_path, "crasher", f"import os, signal\nos.kill(os.getpid(), signal.{CRASH_SIGNAL})\n")
     verdict = judge(target, sample(tmp_path))
-    assert verdict.category == CRASH and verdict.reason == "killed by SIGSEGV"
+    assert verdict.category == CRASH and verdict.reason == f"killed by {CRASH_SIGNAL}"
 
 
 @posix
@@ -165,10 +166,10 @@ def test_jobs_do_not_change_the_answer(tmp_path):
 
 @posix
 def test_a_public_report_does_not_say_which_files_crash_what(tmp_path):
-    target = make(tmp_path, "crasher", "import os, signal\nos.kill(os.getpid(), signal.SIGABRT)\n")
+    target = make(tmp_path, "crasher", f"import os, signal\nos.kill(os.getpid(), signal.{CRASH_SIGNAL})\n")
     files = [sample(tmp_path, b"x", f"f{i}.bin") for i in range(3)]
     shown = run_target(target, files)
-    assert shown.counts[CRASH] == 3 and shown.top_reasons() == [("crash: killed by SIGABRT", 3)]
+    assert shown.counts[CRASH] == 3 and shown.top_reasons() == [(f"crash: killed by {CRASH_SIGNAL}", 3)]
     hidden = run_target(target, files, hide_crashes=True)
     assert hidden.counts[CRASH] == 0 and hidden.counts[ERROR] == 3 and hidden.top_reasons() == []
 

@@ -1,6 +1,7 @@
 """Fakes and builders shared by the tests of evaluate and of the private record."""
 
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,10 @@ from fanbase.cli import main
 
 # The suite replaces subprocess.run for every test (see conftest); this is the real one.
 REAL_RUN = subprocess.run
+
+# macOS shows "Python quit unexpectedly" for every process that dies of SIGSEGV or SIGABRT, and the tests make
+# parsers crash on purpose, a lot of them: on a Mac they die of SIGTERM instead, which fanbase counts as a crash too.
+CRASH_SIGNAL = "SIGTERM" if sys.platform == "darwin" else "SIGSEGV"
 
 ACCEPT = "import sys\nsys.exit(0)\n"
 STRICT = (  # rejects what starts with "bad", saying so
