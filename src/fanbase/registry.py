@@ -212,6 +212,9 @@ def check_registry_info(info: object, where: str) -> dict:
         )
     if name == DEFAULT_REGISTRY_NAME:
         raise RegistryError(f"{where}: the name {DEFAULT_REGISTRY_NAME!r} is the default registry's")
+    quality = info.get("quality")
+    if quality is not None and not (isinstance(quality, str) and quality.strip()):
+        raise RegistryError(f"{where}: quality is where the registry keeps the results of evaluating its specs: a URL or a path")
     return dict(info)
 
 

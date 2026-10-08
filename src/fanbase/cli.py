@@ -30,6 +30,7 @@ from fanbase.manager import (
     all_installed,
     declared_requirements,
     ensure_requirements,
+    entry_sha,
     install,
     install_root,
     spec_path,
@@ -40,6 +41,7 @@ from fanbase.locking import build_lock, check_locked, compare, locked_registry
 from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean, dump_json
 from fanbase.publish import cmd_publish
+from fanbase.quality import cmd_quality_build, for_registry, of as quality_of, summary as quality_summary
 from fanbase.rebase import cmd_rebase
 from fanbase.registry import Registry, RegistryBase, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
@@ -128,6 +130,10 @@ def _list_installed(where: str | None, as_json: bool = False) -> int:
     return 0
 
 
+def _quality_json(found) -> dict:
+    return {"quality": found[0], "quality_current": found[1]} if found else {}
+
+
 def cmd_list(args, ctx: Context) -> int:
     if args.installed:
         return _list_installed(args.format, args.json)
@@ -138,20 +144,27 @@ def cmd_list(args, ctx: Context) -> int:
         if fmt not in reg.formats():
             raise RegistryError(f"unknown format: {_clean(fmt)}")
         entries = reg.kinds(fmt)
+        results = for_registry(reg, getattr(args, "quality", None))
+        known = {e.kind: quality_of(results, e, entry_sha(reg, e)) for e in entries} if results else {}
         if args.json:
             print(dump_json([
                 {"kind": e.kind, "version": e.meta.get("version"), "description": e.meta.get("description"),
                  "extensions": e.meta.get("extensions") or [], "requires": e.requires,
-                 "installed": spec_path(root, e.format, e.kind, reg.name).is_file()}
+                 "installed": spec_path(root, e.format, e.kind, reg.name).is_file(),
+                 **_quality_json(known.get(e.kind))}
                 for e in entries
             ]))
             return 0
         width = max(len(e.kind) for e in entries)
         for e in entries:
             have = "*" if spec_path(root, e.format, e.kind, reg.name).is_file() else " "
-            notes = [e.meta.get("description"), e.requires and f"(requires: {', '.join(e.requires)})"]
+            found = known.get(e.kind)
+            notes = [e.meta.get("description"), e.requires and f"(requires: {', '.join(e.requires)})",
+                     found and f"[{quality_summary(*found)}]"]
             print(_clean(f" {have}{e.kind:<{width}}  {' '.join(n for n in notes if n)}").rstrip())
         print("\n* installed")
+        if results is not None and not any(known.values()):
+            print("(the quality results do not cover these specs)")
         return 0
 
     formats = reg.formats()
@@ -170,10 +183,18 @@ def cmd_show(args, ctx: Context) -> int:
     meta = {"format": entry.format, "kind": entry.kind, "path": entry.path, **entry.meta}
     if reg.name:
         meta = {"registry": reg.name, **meta}
+    results = for_registry(reg, getattr(args, "quality", None))
+    found = quality_of(results, entry, entry_sha(reg, entry)) if results else None
+    if found:
+        meta = {**meta, "quality": {**found[0], "current": found[1]}}
     if args.json:
         print(dump_json(meta))
         return 0
     print(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), end="")
+    if found:
+        print(f"# quality: {quality_summary(*found)}")
+    elif results is not None:
+        print("# quality: the results do not cover this spec")
     return 0
 
 
@@ -504,11 +525,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list", help="list formats, or the specs of one format")
     p.add_argument("format", nargs="?", help="e.g. png; acme: or acme:png for a registry you added")
     p.add_argument("--installed", action="store_true", help="list what is installed; asks no registry")
+    p.add_argument("--quality", nargs="?", const="auto", metavar="FILE|URL", help="also how well each spec does (parsers accept, coverage, speed), from the registry's results or from FILE or URL")
     p.add_argument("--json", action="store_true", help="as JSON, for scripts")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show a spec's metadata")
     p.add_argument("ref", help="e.g. png, png/png-apng, or acme:png-strict")
+    p.add_argument("--quality", nargs="?", const="auto", metavar="FILE|URL", help="also how well it does, from the registry's results or from FILE or URL")
     p.add_argument("--json", action="store_true", help="as JSON, for scripts")
     p.set_defaults(fn=cmd_show)
 
@@ -643,6 +666,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hide-crashes", action="store_true", help="count a crash or a hang as a plain error and say nothing about it: for public reports")
     p.add_argument("--incidents", metavar="DIR", help="write the private record of targets that crash, hang or are killed to DIR (only you can read it)")
     p.add_argument("--incident-recipients", metavar="FILE", help="with --incidents: encrypt the record with age to the public key(s) in FILE, and never print anything about it; for CI")
+    p.add_argument("--compare-with", metavar="FILE|URL", help="say what changed since earlier results (quality.json, or a report of --json-file); nothing to compare with is only said")
+    p.add_argument("--fail-on-worse", action="store_true", help="with --compare-with: exit 1 if a spec does worse than before on a parser that is the same")
     p.add_argument("--coverage", action="store_true", help="also measure how much of the library each target that can be measured runs on the files, against real files (needs the image of the registry's coverage/)")
     p.add_argument("--coverage-only", action="store_true", help="--coverage, and only the targets that can be measured, not the ones the formats name")
     p.add_argument("--curve", metavar="N,N,...", help="with --coverage: after how many inputs to read the coverage (default 1,10,100,1000, and the last)")
@@ -668,6 +693,14 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("file", metavar="FILE", help="the encrypted record: only a file age made is sent, and at most 20 MB")
     q.add_argument("--to", required=True, metavar="ADDRESS", help="who to send it to")
     q.set_defaults(fn=cmd_incidents_send)
+
+    p = sub.add_parser("quality", help="the results of evaluating the specs, kept for a registry's users")
+    qual_sub = p.add_subparsers(dest="quality_command", required=True)
+    q = qual_sub.add_parser("build", help="make quality.json from the reports of `fanbase evaluate --json-file`")
+    q.add_argument("reports", nargs="+", metavar="REPORT", help="the reports (a run of the parsers and a run of the coverage can be two)")
+    q.add_argument("-o", "--output", default="quality.json", metavar="FILE", help="where to write it (default quality.json; - for the screen)")
+    q.add_argument("--add-to", metavar="FILE|URL", help="start from earlier results: what they say of other specs stays")
+    q.set_defaults(fn=cmd_quality_build)
 
     p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
     p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")

@@ -367,6 +367,31 @@ coverage:
   with gcov, so that CI compiles nothing. The files are run one at a time, in order (the counters are shared), and
   what the verdict pass ran does not count: the counters are cleared first.
 
+### Choosing between grammars: `quality.json` and `--compare-with`
+
+Several specs can describe the same format. What is kept of an evaluation for choosing between them is
+`quality.json`: for each spec, tied to the hash of the spec it was measured on, how much of its files each parser
+accepts, how much of a library they reach, and how fast Fandango makes them.
+
+```bash
+fanbase evaluate --all --coverage --json-file evaluation.json     # the run
+fanbase quality build evaluation.json -o quality.json              # what is kept (several reports can be one document)
+fanbase list png --quality                                         # in the listing: [accepts 100%, covers 22.5%, 16/s]
+fanbase show png/png-apng --quality
+```
+
+A registry says where it keeps the results (`quality:` in its `registry.yml`), or has a `quality.json` in its root if
+it is a checkout; for a GitHub registry it is the asset of its latest release. `--quality FILE|URL` reads another.
+Results measured on an earlier version of a spec are shown as such ("for an earlier version"). The results are read
+strictly: only numbers and cleaned names are taken from them, as they come from a registry that may not be yours.
+
+`evaluate --compare-with FILE|URL` says what changed since earlier results (a `quality.json` or a report of
+`--json-file`), and why: a drop is **worse** only when it is the spec's, that is, the parser is the same one as
+before (its version is recorded); if the parser was updated, the number moved for a reason the spec did not give,
+and it is only a note. A parser that accepts five points fewer of a spec's files, or two points less of a library's
+lines, is worse; Fandango's speed is only told when it moves by half or double, since it is the machine's as much as
+the spec's. `--fail-on-worse` makes it an exit status. Nothing to compare with (the first run) is only said.
+
 ### The private record of crashes and hangs
 
 Hiding a crash from a public report is not the same as losing it: whoever runs the evaluation is the one who has to

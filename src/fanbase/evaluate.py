@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fanbase import __version__
+from fanbase import __version__, compare as comparing, quality as quality_results
 from fanbase.context import Context
 from fanbase.contrib import changed_specs, checkout, find_fandango, produce
 from fanbase.coverage import DEFAULT_CURVE, CoverageError, CoverageResult, coverage_targets, measure
@@ -409,14 +409,31 @@ def cmd_evaluate(args, ctx: Context) -> int:
             print(f"{len(log.incidents)} incident(s) saved in {saved}", file=sys.stderr)
 
     document = to_json(reports, args)
+    worse = False
+    earlier = None
+    differences: list = []
+    if getattr(args, "compare_with", None):
+        try:
+            earlier = quality_results.load(args.compare_with)
+        except RegistryError as exc:  # nothing to compare with yet is not a failure of the evaluation
+            print(f"no comparison: {clean(exc)}", file=sys.stderr)
+        else:
+            differences = comparing.compare(earlier, quality_results.build([document]))
+            document["comparison"] = {"made": earlier.get("made"), "fanbase": earlier.get("fanbase"),
+                                      "fandango": earlier.get("fandango"), "differences": [d.to_dict() for d in differences]}
+            worse = any(d.kind == "worse" for d in differences)
     if args.json_file:
         Path(args.json_file).write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if args.json:
         print(json.dumps(document, indent=2, ensure_ascii=False))
     elif args.markdown:
         print(as_markdown(reports, args))
+        if earlier is not None:
+            print(comparing.as_markdown(earlier, differences))
     else:
         print(as_text(reports, args), end="")
+        if earlier is not None:
+            print(comparing.as_text(earlier, differences), end="")
 
     failed = [r for r in reports if r.error]
     if failed:
@@ -426,6 +443,8 @@ def cmd_evaluate(args, ctx: Context) -> int:
         problems += sum(1 for r in reports if r.met is False)
     if args.require_targets:
         problems += sum(1 for r in reports for t in r.targets if t.status == "unavailable")
+    if getattr(args, "fail_on_worse", False) and worse:
+        problems += 1
     return 1 if problems else 0
 
 
