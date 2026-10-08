@@ -1,0 +1,61 @@
+name: tests
+
+# The tests on Linux, macOS and Windows, with the oldest and the newest Python the package says it
+# supports, and the type check. There is no secret here, the token can only read, and the only
+# actions are GitHub's own.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The tests of the private record that use the real age are skipped without it. Windows is
+      # left without: its tests of the record are skipped there anyway (signals and modes are POSIX).
+      - name: age
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y age
+          else
+            brew install age
+          fi
+
+      # fandango-fuzzer: the tests that run a real Fandango are skipped without it.
+      - run: python -m pip install -e . pytest fandango-fuzzer
+
+      - run: python -m pytest -q -rs
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install -e . mypy types-PyYAML
+
+      - run: mypy src
