@@ -489,6 +489,22 @@ fanbase incidents send evaluation-private.age --to you@example.org              
 `open` unpacks only plain files with plain names into a folder that is new or empty (never into one with something
 in it, and never anywhere else), and makes it readable by you alone. Start with its `REPORT.md`.
 
+Once a record is open, these keep what is to be done about it straight:
+
+```bash
+fanbase incidents list opened/                          # what broke, and where each incident stands
+fanbase incidents show opened/ imagemagick-crash        # the note to the vendor (the start of an id will do)
+fanbase incidents track opened/ imagemagick-crash --reported today --vendor ImageMagick --reference "issue 4711"
+fanbase incidents verify opened/ imagemagick-crash      # run the kept input against the parser as it is now: still broken?
+fanbase incidents track opened/ imagemagick-crash --fixed-in 7.1.2 --fixed-on 2026-11-20
+```
+
+`track` keeps the usual clock (OSS-Fuzz, Project Zero): a bug may be made public 90 days after it was reported, or 30 days after
+it was fixed if that comes first; `list` shows the date for each. It is a reminder, not a rule: fanbase never makes anything
+public. What is tracked is in `tracking.yml` in the record's folder (mode 0600). `verify` runs the input an incident kept
+with the target as the registry checkout defines it, and the limits of `evaluate`, and says whether it still crashes or hangs, and
+with which version; it does not note a fix for you. Run it where you would run that parser on a file that is a bug.
+
 `send` mails the encrypted file and nothing else, and refuses anything that does not start with the `age` header, or
 is over 20 MB (a mail server may refuse less: keep the artifact as the copy that is always there). The body says the
 same thing whatever the file holds. The server comes from the environment, so the secrets stay out of any file:

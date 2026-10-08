@@ -25,6 +25,7 @@ from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.doi import cmd_doi
 from fanbase.evaluate import cmd_evaluate, cmd_targets
 from fanbase.incident_cmds import cmd_incidents_open, cmd_incidents_send
+from fanbase.incident_track import cmd_incidents_list, cmd_incidents_show, cmd_incidents_track, cmd_incidents_verify
 from fanbase.manager import (
     FandangoMismatch,
     Installed,
@@ -707,6 +708,29 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("file", metavar="FILE", help="the encrypted record: only a file age made is sent, and at most 20 MB")
     q.add_argument("--to", required=True, metavar="ADDRESS", help="who to send it to")
     q.set_defaults(fn=cmd_incidents_send)
+    q = inc_sub.add_parser("list", help="the incidents of an opened record, and where each stands")
+    q.add_argument("folder", metavar="DIR", help="an opened record (`incidents open`), or what `evaluate --incidents` wrote without a key")
+    q.set_defaults(fn=cmd_incidents_list)
+    q = inc_sub.add_parser("show", help="the note to the vendor of one incident")
+    q.add_argument("folder", metavar="DIR")
+    q.add_argument("id", help="an incident's id, or the start of it")
+    q.set_defaults(fn=cmd_incidents_show)
+    q = inc_sub.add_parser("track", help="note what was done about an incident: reported, to whom, fixed; it keeps the 90-day clock")
+    q.add_argument("folder", metavar="DIR")
+    q.add_argument("id", help="an incident's id, or the start of it")
+    q.add_argument("--reported", metavar="DATE", help="when you told the vendor (2026-10-08, or today)")
+    q.add_argument("--vendor", metavar="NAME", help="who it was reported to")
+    q.add_argument("--reference", metavar="TEXT", help="a ticket, an advisory, a CVE: how to find the report again")
+    q.add_argument("--fixed-in", metavar="VERSION", help="the version that fixed it")
+    q.add_argument("--fixed-on", metavar="DATE", help="when that version came out")
+    q.add_argument("--note", metavar="TEXT")
+    q.set_defaults(fn=cmd_incidents_track)
+    q = inc_sub.add_parser("verify", help="run the input an incident kept against the parser as it is now: is it fixed?")
+    q.add_argument("folder", metavar="DIR")
+    q.add_argument("id", help="an incident's id, or the start of it")
+    q.add_argument("--timeout", type=int, default=20, metavar="SECONDS", help="for the parser to answer (default 20)")
+    q.add_argument("--memory", type=int, default=2048, metavar="MB", help="the parser may use this much memory (default 2048; enforced on Linux)")
+    q.set_defaults(fn=cmd_incidents_verify, local=True)
 
     p = sub.add_parser("quality", help="the results of evaluating the specs, kept for a registry's users")
     qual_sub = p.add_subparsers(dest="quality_command", required=True)
