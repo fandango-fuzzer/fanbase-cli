@@ -21,7 +21,7 @@ from packaging.version import InvalidVersion, Version
 
 from fanbase.config import Config
 from fanbase.context import Context
-from fanbase.deps import check_version, closure, identity, parse_extends
+from fanbase.deps import check_version, closure, identity, parse_extends, self_names
 from fanbase.manager import (
     Installed,
     entry_sha,
@@ -191,6 +191,144 @@ def foreign_includes(text: str, source: RegistryBase, target_id: str) -> list[st
     return [path for _, path in _INCLUDE.findall(text) if any(path.startswith(f"{prefix}/") for prefix in prefixes)]
 
 
+_INCLUDE_BYTES = re.compile(rb"""(include\(\s*)(["'])(.+?)\2""")
+
+
+def rewrite_includes(raw: bytes, paths: dict[str, str]) -> bytes:
+    """`raw` with each include of a path in `paths` pointing at the path it maps to; the rest as it is."""
+    wanted = {old.encode(): new.encode() for old, new in paths.items()}
+    return _INCLUDE_BYTES.sub(lambda m: m.group(1) + m.group(2) + wanted.get(m.group(3), m.group(3)) + m.group(2), raw)
+
+
+@dataclass
+class _Fork:
+    source: RegistryBase
+    entry: Entry
+    kind: str  # what it is called in the target
+    extends: list | None = None  # what its `extends` becomes; None: worked out as for a spec forked alone
+    reuse: bool = False  # the target has a fork of it already, which is kept as it is
+
+
+def _where(source: RegistryBase, entry: Entry) -> str:
+    return f"{identity(source) or DEFAULT_REGISTRY_NAME}:{entry}"
+
+
+def _include_paths(source: RegistryBase, entry: Entry) -> list[str]:
+    """How a spec of the registry is included: by the registry's name, if it has one."""
+    prefixes = {name for name in (identity(source), source.name) if name} or {""}
+    return [f"{prefix + '/' if prefix else ''}{entry.format}/{entry.kind}.fan" for prefix in sorted(prefixes)]
+
+
+def _derived_from(folder: Path) -> str | None:
+    try:
+        meta = yaml.safe_load((folder / "metadata.yml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    value = meta.get("derived_from") if isinstance(meta, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _plan(ctx: Context, source: RegistryBase, entry: Entry, kind: str, target: Registry, owner: str) -> tuple[list[_Fork], dict[str, str]]:
+    """What `fork --with-deps` writes: the spec, and everything it extends that the target does not have, each
+    under the name it has; and how the includes of the copies must be changed to find each other."""
+    members = closure(ctx, source, entry)
+    plan: list[_Fork] = []
+    names: dict[tuple, str | None] = {}  # (registry, format, kind) -> its name in the target; None: it is there already
+    called: dict[str, str] = {}
+    problems: list[str] = []
+    for n, (reg, member) in enumerate(members):
+        root = n == len(members) - 1
+        key = (reg.name, member.format, member.kind)
+        if not root and identity(reg) == owner:
+            names[key] = None
+            continue
+        name = kind if root else member.kind
+        ref = f"{member.format}/{name}"
+        if ref in called:
+            problems.append(f"{called[ref]} and {_where(reg, member)} would both be called {ref}")
+            continue
+        called[ref] = _where(reg, member)
+        reuse = False
+        if not root and (target.specs_dir / member.format / name).exists():
+            was = _derived_from(target.specs_dir / member.format / name)
+            if was is not None and (was == _where(reg, member) or was.startswith(_where(reg, member) + "@")):
+                reuse = True
+            else:
+                problems.append(f"{ref} exists already in the target and is not a fork of {_where(reg, member)}")
+        names[key] = name
+        plan.append(_Fork(reg, member, name, reuse=reuse))
+    if problems:
+        raise RegistryError("; ".join(problems) + "; nothing was copied")
+
+    include_map: dict[str, str] = {}
+    for fork in plan:
+        for old in _include_paths(fork.source, fork.entry):
+            new = f"{owner + '/' if owner else ''}{fork.entry.format}/{fork.kind}.fan"
+            if old != new:
+                include_map[old] = new
+        if fork.reuse:
+            continue
+        items = []
+        for item in fork.entry.meta.get("extends") or []:
+            dep = parse_extends(item, fork.source.name, self_names(fork.source))
+            dep_reg = ctx.registry(dep.registry or None)
+            dep_entry = dep_reg.resolve(dep.ref)
+            new_name = names.get((dep_reg.name, dep_entry.format, dep_entry.kind))
+            # a copy starts again at version 0.1, so the range its original asked for would not fit
+            items.append(new_name if new_name is not None else _requalified([item], fork.source, owner)[0])
+        fork.extends = items
+    return plan, include_map
+
+
+def _write_fork(fork: _Fork, target: Registry, owner: str, include_map: dict[str, str]) -> Path:
+    source, entry, kind = fork.source, fork.entry, fork.kind
+    where = _where(source, entry)
+    version = entry.meta.get("version")
+    keep = ("title", "extensions", "mime", "reference", "license", "source", "fandango", "pip")
+    meta: dict = {"description": f"{entry.meta.get('description') or entry.kind} (fork of {where})".strip()}
+    meta.update({key: entry.meta[key] for key in keep if key in entry.meta})
+    authors = list(entry.meta.get("authors") or [])
+    if (user := git_user()) and user not in [a.get("name") if isinstance(a, dict) else a for a in authors]:
+        authors.append(user)
+    if authors:
+        meta["authors"] = authors
+    extends = fork.extends if fork.extends is not None else (
+        _requalified(list(entry.meta["extends"]), source, owner) if entry.meta.get("extends") else [])
+    if extends:
+        meta["extends"] = extends
+    meta.update(derived_from=f"{where}@{version}" if version is not None else where, version="0.1", status="draft")
+    raw = source.read(entry)
+    meta["derived_sha256"] = sha256(raw)
+    written = rewrite_includes(raw, include_map) if include_map else raw  # the bytes as they are, unless an include moves
+
+    folder = target.specs_dir / entry.format / kind
+    folder.mkdir(parents=True)
+    try:
+        save_base(raw)  # the common ancestor of a later `fanbase rebase`
+        for path in foreign_includes(written.decode("utf-8", errors="replace"), source, owner):
+            print(
+                f'warning: it includes "{clean(path)}", a file of the registry {identity(source)}, which '
+                f"{owner or 'the public registry'} does not have; fork what it includes first, or change the include",
+                file=sys.stderr,
+            )
+        (folder / f"{kind}.fan").write_bytes(written)
+        (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    except BaseException:
+        _remove(folder)
+        raise
+    return folder
+
+
+def _shown(target: Registry, fork: _Fork) -> str:
+    return f"{(target.specs_dir / fork.entry.format / fork.kind).relative_to(target.root)}/"
+
+
+def _remove(folder: Path) -> None:
+    shutil.rmtree(folder, ignore_errors=True)
+    if folder.parent.is_dir() and not any(folder.parent.iterdir()):
+        folder.parent.rmdir()
+
+
 def cmd_fork(args, ctx: Context) -> int:
     """Copy a spec of any registry into the checkout under a new name, to change it there."""
     source, entry = ctx.resolve(args.ref)
@@ -203,47 +341,38 @@ def cmd_fork(args, ctx: Context) -> int:
     fmt, kind = split_new_ref(args.name)
     if fmt != entry.format:
         raise RegistryError(f"a fork of {entry} is a spec of the format {entry.format}, not {fmt}")
-    folder = target.specs_dir / fmt / kind
-    if folder.exists():
-        raise RegistryError(f"{fmt}/{kind} exists already: {folder}")
+    if (target.specs_dir / fmt / kind).exists():
+        raise RegistryError(f"{fmt}/{kind} exists already: {target.specs_dir / fmt / kind}")
 
     owner = target.info.get("name", "")
-    where = f"{identity(source) or DEFAULT_REGISTRY_NAME}:{entry}"
-    version = entry.meta.get("version")
-    keep = ("title", "extensions", "mime", "reference", "license", "source", "fandango", "pip")
-    meta: dict = {"description": f"{entry.meta.get('description') or entry.kind} (fork of {where})".strip()}
-    meta.update({key: entry.meta[key] for key in keep if key in entry.meta})
-    authors = list(entry.meta.get("authors") or [])
-    if (user := git_user()) and user not in [a.get("name") if isinstance(a, dict) else a for a in authors]:
-        authors.append(user)
-    if authors:
-        meta["authors"] = authors
-    if entry.meta.get("extends"):
-        meta["extends"] = _requalified(list(entry.meta["extends"]), source, owner)
-    meta.update(derived_from=f"{where}@{version}" if version is not None else where, version="0.1", status="draft")
-    raw = source.read(entry)
-    meta["derived_sha256"] = sha256(raw)
+    if getattr(args, "with_deps", False):
+        plan, include_map = _plan(ctx, source, entry, kind, target, owner)
+    else:
+        plan, include_map = [_Fork(source, entry, kind)], {}
 
-    folder.mkdir(parents=True)
+    written: list[Path] = []
     try:
-        text = raw.decode("utf-8", errors="replace")
-        save_base(raw)  # the common ancestor of a later `fanbase rebase`
-        for path in foreign_includes(text, source, owner):
-            print(
-                f'warning: it includes "{clean(path)}", a file of the registry {identity(source)}, which '
-                f"{owner or 'the public registry'} does not have; fork what it includes first, or change the include",
-                file=sys.stderr,
-            )
-        (folder / f"{kind}.fan").write_bytes(raw)  # the bytes as they are: their hash is what rebase merges from
-        (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        for fork in plan:
+            if not fork.reuse:
+                written.append(_write_fork(fork, target, owner, include_map))
         refresh(target)
     except BaseException:
-        shutil.rmtree(folder, ignore_errors=True)
-        if not any(folder.parent.iterdir()):
-            folder.parent.rmdir()
+        for folder in written:
+            _remove(folder)
         raise
-    print(f"forked {where} into {folder.relative_to(target.root)}/")
-    print(f"it records `derived_from: {meta['derived_from']}`, and keeps the original authors")
+
+    done = iter(written)
+    for fork in plan:
+        if fork.reuse:
+            print(f"kept {_shown(target, fork)}, which is a fork of {_where(fork.source, fork.entry)} already")
+        else:
+            print(f"forked {_where(fork.source, fork.entry)} into {next(done).relative_to(target.root)}/")
+    if getattr(args, "with_deps", False) and len(plan) == 1:
+        print("what it extends is in this registry already: nothing else to copy")
+    root = plan[-1]
+    version = root.entry.meta.get("version")
+    derived = _where(root.source, root.entry) + (f"@{version}" if version is not None else "")
+    print(f"it records `derived_from: {derived}`, and keeps the original authors")
     print(f"next: edit {kind}.fan, then `fanbase check {kind}`")
     return 0
 

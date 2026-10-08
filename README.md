@@ -223,6 +223,14 @@ fanbase publish                  # branch, commit, push, and a pull request (nee
 - `fork` copies a spec of any registry (`acme:png-strict` too) into the checkout under a new name. It
   records `derived_from: fanbase:png/png-apng@1.0` and keeps the original authors, adding you. Use
   `--into DIR` to put it in another checkout, such as your own registry.
+  A spec that builds on others (`extends`) is copied alone by default, and keeps building on the originals: in
+  your own registry they are `fanbase:png`, and a spec of a third registry cannot be moved at all, since your
+  registry cannot name it. With `--with-deps` the whole family is copied: what it extends, and what that extends,
+  each under its own name, forked from the original like the spec itself (`derived_from`, version `0.1`, `draft`).
+  The copies build on each other: their `extends` name the copies, with no version range (the copy is at `0.1`),
+  and their `include("...")` lines point at the copies' files, so changing the base changes what builds on it. A
+  dependency you forked before is kept as it is, with your changes; a name that is taken by something else stops
+  the whole thing, and nothing is written.
 - `rebase SPEC` brings a fork up to date with the spec it was forked from. It merges what changed in the
   original since you forked it into your version, with `git merge-file`, so a conflict looks like git's: fix it,
   and `check` refuses the spec until you do. It needs the original as it was when you forked, the common ancestor,

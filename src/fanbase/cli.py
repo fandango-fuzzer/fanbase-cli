@@ -601,6 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ref", help="the spec to copy, e.g. png, or acme:png-strict")
     p.add_argument("--as", dest="name", required=True, metavar="NAME", help="what to call the copy, e.g. png-fancy")
     p.add_argument("--into", metavar="DIR", help="the registry checkout to put it in (default: the one you are in)")
+    p.add_argument("--with-deps", action="store_true", help="also copy what it extends, which the copy then builds on instead of the originals")
     p.set_defaults(fn=cmd_fork)
 
     p = sub.add_parser("rebase", help="bring a fork up to date with the spec it was forked from")
