@@ -9,6 +9,7 @@ of a spec: `acme:png/png-strict`.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -21,6 +22,7 @@ from fanbase.context import Context
 from fanbase.deps import closure, dependencies, dependents, label, self_names
 from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
 from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
+from fanbase.evaluate import cmd_evaluate, cmd_targets
 from fanbase.manager import (
     FandangoMismatch,
     Installed,
@@ -616,6 +618,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strict", action="store_true", help="a spec with no description, authors or license is a failure")
     p.add_argument("--base", metavar="REGISTRY", help="a registry (URL or path) to compare with: a changed spec needs a new version")
     p.set_defaults(fn=cmd_check, local=True)
+
+    p = sub.add_parser("evaluate", help="how do a spec's files do against the parsers of their format?")
+    p.add_argument("refs", nargs="*", metavar="ref", help="the specs to evaluate")
+    p.add_argument("--all", action="store_true", help="every spec of the checkout")
+    p.add_argument("--changed", action="store_true", help="the specs that changed since --base, and what builds on them")
+    p.add_argument("--base", metavar="REGISTRY", help="with --changed: the registry (URL or path) to compare with")
+    p.add_argument("--targets", metavar="A,B", help="only these targets, instead of those the format names")
+    p.add_argument("-n", "--count", type=int, default=100, metavar="N", help="inputs to produce from each spec (default 100)")
+    p.add_argument("--seed", type=int, default=1, metavar="S", help="the random seed, so the same inputs come out each time (default 1)")
+    p.add_argument("--timeout", type=int, default=20, metavar="SECONDS", help="for a target to answer about one file (default 20)")
+    p.add_argument("--generate-timeout", type=int, default=300, metavar="SECONDS", help="for Fandango to produce the inputs of one spec (default 300)")
+    p.add_argument("--memory", type=int, default=2048, metavar="MB", help="a target may use this much memory (default 2048; enforced on Linux)")
+    p.add_argument("-j", "--jobs", type=int, default=min(4, os.cpu_count() or 1), metavar="N", help="files asked about at the same time")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import")
+    p.add_argument("--hide-crashes", action="store_true", help="count a crash as a plain error and say nothing about it: for public reports")
+    p.add_argument("--keep", metavar="DIR", help="keep the inputs in DIR (to look at them locally)")
+    p.add_argument("--strict", action="store_true", help="exit 1 if a spec does not decode as often as it says it should")
+    p.add_argument("--require-targets", action="store_true", help="exit 1 if a target cannot run here")
+    p.add_argument("--json", action="store_true", help="the report as JSON")
+    p.add_argument("--json-file", metavar="FILE", help="also write the report as JSON to FILE")
+    p.add_argument("--markdown", action="store_true", help="the report as Markdown (for a CI job summary)")
+    p.set_defaults(fn=cmd_evaluate, local=True)
+
+    p = sub.add_parser("targets", help="the targets of the registry checkout, and whether they can run here")
+    p.set_defaults(fn=cmd_targets, local=True)
 
     p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
     p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")

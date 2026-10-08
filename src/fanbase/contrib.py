@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -369,35 +370,64 @@ def _requirements(installed: list[Installed], label: str, install_them: bool, sa
     return None
 
 
+@dataclass
+class Produced:
+    """What Fandango made from a spec, and how long it took."""
+
+    files: list[Path]
+    seconds: float
+    directory: Path  # holds the inputs, and the specs that were installed for it
+    error: str | None = None  # why there is nothing to use: it timed out, made nothing, or could not start
+    returncode: int | None = None
+    tail: str = ""  # the last of what it said, when it did not exit cleanly
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+
+def produce(reg: Registry, entry: Entry, ctx: Context, *, count: int, timeout: int, fandango: str,
+            install_them: bool = True, say=print, seed: int | None = None) -> Produced:
+    """Make Fandango produce inputs from a spec, with what it extends installed where its
+    include() looks, and the Python packages they import installed too. With a seed the
+    same inputs come out each time. The caller removes `directory` when done with the inputs."""
+    tmp = Path(tempfile.mkdtemp(prefix="fanbase-check-"))
+    library, out = tmp / "library", tmp / "out"
+    installed = [install(dep_reg, dep, library) for dep_reg, dep in closure(ctx, reg, entry)]
+    if why := _requirements(installed, str(entry), install_them, say):
+        return Produced([], 0.0, tmp, error=why)
+    env = {**os.environ, "FANDANGO_PATH": str(library)}
+    cmd = [fandango, "fuzz", "-f", str(spec_path(library, entry.format, entry.kind, reg.name)),
+           "-n", str(count), "-d", str(out)]
+    if seed is not None:
+        cmd += ["--random-seed", str(seed)]
+        env["PYTHONHASHSEED"] = str(seed)  # Fandango asks for it, for the same inputs each time
+    started = time.monotonic()
+    try:
+        done = _run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return Produced([], time.monotonic() - started, tmp, error=f"fandango did not finish in {timeout} seconds")
+    seconds = time.monotonic() - started
+    files = sorted(p for p in out.glob("*") if p.is_file()) if out.is_dir() else []
+    tail = " | ".join((done.stderr or done.stdout).strip().splitlines()[-2:])
+    produced = Produced(files, seconds, tmp, returncode=done.returncode, tail=tail)
+    if not files:
+        produced.error = "fandango produced no files"
+    elif not any(p.stat().st_size > 0 for p in files):
+        produced.error = "fandango produced only empty files"
+    return produced
+
+
 def generate(reg: Registry, entry: Entry, ctx: Context, count: int, timeout: int, fandango: str,
              install_requirements_: bool = True, say=print) -> str | None:
-    """Make Fandango produce inputs from a spec, with what it extends installed where its
-    include() looks, and the Python packages they import installed too. None if it produced
-    inputs; else why not."""
-    tmp = Path(tempfile.mkdtemp(prefix="fanbase-check-"))
+    """Does Fandango produce inputs from this spec? None if it does; else why not."""
+    made = produce(reg, entry, ctx, count=count, timeout=timeout, fandango=fandango,
+                   install_them=install_requirements_, say=say)
     try:
-        library, out = tmp / "library", tmp / "out"
-        installed = [install(dep_reg, dep, library) for dep_reg, dep in closure(ctx, reg, entry)]
-        if why := _requirements(installed, str(entry), install_requirements_, say):
-            return why
-        env = {**os.environ, "FANDANGO_PATH": str(library)}
-        cmd = [fandango, "fuzz", "-f", str(spec_path(library, entry.format, entry.kind, reg.name)),
-               "-n", str(count), "-d", str(out)]
-        try:
-            done = _run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return f"fandango did not finish in {timeout} seconds"
-        files = [p for p in out.glob("*") if p.is_file()] if out.is_dir() else []
-        if done.returncode != 0:
-            tail = " | ".join((done.stderr or done.stdout).strip().splitlines()[-2:])
-            return f"fandango failed ({done.returncode}): {tail}"
-        if not files:
-            return "fandango produced no files"
-        if not any(p.stat().st_size > 0 for p in files):
-            return "fandango produced only empty files"
-        return None
+        if made.returncode not in (None, 0):
+            return f"fandango failed ({made.returncode}): {made.tail}"
+        return made.error
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        made.cleanup()
 
 
 @dataclass

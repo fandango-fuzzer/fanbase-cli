@@ -5,7 +5,7 @@ from conftest import build_registry, republish
 from fanbase.cli import main
 from fanbase.manager import install
 from fanbase.manifest import INDEX_FILENAME
-from fanbase.registry import Registry, RegistryError
+from fanbase.registry import Registry
 
 
 def run(capsys, *argv):

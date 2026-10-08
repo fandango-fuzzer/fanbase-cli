@@ -246,6 +246,65 @@ fanbase publish                  # branch, commit, push, and a pull request (nee
 Give a spec that changed a new `version`: it is what lets everyone, and the registry's checks, tell the
 new from the old.
 
+## Evaluating a spec
+
+`fanbase check` says that a spec produces files. `fanbase evaluate` says how those files do against the
+parsers of their format, from a registry checkout:
+
+```bash
+fanbase evaluate png png-apng             # 100 inputs from each, asked about by the targets of the format
+fanbase evaluate --changed --base https://github.com/fandango-fuzzer/fanbase    # what you changed, and what builds on it
+fanbase evaluate png -n 1000 --json       # as JSON; --markdown for a CI job summary; --json-file FILE as well
+fanbase targets                           # the targets of this checkout, and whether they can run here
+```
+
+```
+png/png-apng  version 1.0: 100 inputs from seed 1 in 3.7s (27.0/s)
+  target   accepted  invalid  unsupported  resource-limit  crash  timeout  error  files/s  version
+  pillow    100/100        0            0               0      0        0      0     9676  12.3.0
+  expected always: best target accepts 100%, which is always; as expected
+```
+
+- **Validity.** For each target, how many files it accepts, and the rest by reason: invalid, unsupported (a
+  feature the parser lacks), resource limit (a file that asks for more than it may have), crash, timeout, or a
+  failure of the target itself. The commonest reasons are listed, made the same for files that differ only in
+  name or number.
+- **Throughput.** How fast Fandango produces inputs, and how fast each target answers. Both depend on the
+  machine; read them as a trend.
+- **What to expect.** Many specs exist to make files that do not decode. A spec says how often its files should
+  be accepted, with `decodes: always|mostly|rarely|never`, and the report says whether the best target agrees
+  (`--strict` makes a mismatch a failure). One parser's word is not the format's: a parser may lack a feature, so
+  the best target decides, and a format should have several.
+- **Same each time.** `--seed` (default 1) is given to Fandango, and to Python's hash seed, so the inputs are the same.
+
+**Targets** are the parsers and tools files are judged by. A format names them in its `format.yml`
+(`targets: [pillow, imagemagick]`), or a spec does in its own `metadata.yml`; each is a folder `targets/<name>/`
+of the registry with a `target.yml`:
+
+```yaml
+title: Pillow
+formats: [png, gif, bmp, jpeg, tiff, webp]                # what it can judge
+run: ["{python}", "{dir}/harness.py", "{file}"]           # exit 0 accepts the file; anything else rejects it
+needs: {commands: [], python: [PIL], pip: [Pillow]}       # what has to be there; evaluate says what is missing
+version: ["{python}", "-c", "import PIL; print(PIL.__version__)"]
+classify:                                                 # what a rejection means, by what it says
+  - match: "(?i)decompression ?bomb|exceeds limit"
+    as: resource-limit
+```
+
+`{file}` is the file asked about, `{dir}` the target's folder, `{python}` the interpreter fanbase runs in.
+A tool with the right exit status needs no harness: `run: [djpeg, -fast, -outfile, /dev/null, "{file}"]`.
+
+A target is a command that a registry tells fanbase to run, so it is as much code as a spec is: `evaluate` works on a
+checkout you have read, and in CI on a machine that is thrown away. Each file is judged by a process of its own,
+with a timeout (`--timeout`), a memory and CPU limit (`--memory`, enforced on Linux), and core dumps switched off.
+
+**Crashes are not for a public log.** A parser that crashes on a generated file may have a bug that is not fixed
+yet, and the registry's [ethics considerations](https://github.com/fandango-fuzzer/fanbase/blob/main/ETHICS.md)
+are that concrete inputs and unfixed vulnerabilities are not published. A crash is counted and named in what you
+run locally. With `--hide-crashes`, which CI uses for anything public, it is counted as a plain error and nothing
+about it is kept, and no input is ever saved unless you ask with `--keep DIR` (which does not go with it).
+
 ## Registries besides the public one
 
 The public registry is the default, and the only one a plain name such as `png` can ever
