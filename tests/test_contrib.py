@@ -451,3 +451,61 @@ def test_includes_of_the_public_registry_are_fine_anywhere(capsys, reg, mine2):
     code, _, err = run(capsys, "--registry", str(reg), "fork", "png-apng", "--as", "png-apng-mine", "--into", str(mine2))
     assert code == 0 and "warning" not in err
     assert meta(mine2, "png-apng-mine")["extends"] == ["fanbase:png"]
+
+
+# --- check: the Python packages a spec needs
+
+NEEDS = "fanbase_test_module_that_is_not_installed"
+
+
+def needing(reg, kind="gif"):
+    """The spec imports a package that is not installed."""
+    fmt = kind.split("-")[0]
+    (reg / "specs" / fmt / kind / f"{kind}.fan").write_text(f"import {NEEDS}\n<start> ::= '{kind}'\n")
+    republish(reg, kind)
+
+
+def test_check_installs_the_packages_a_spec_needs(capsys, reg, fake, pip_calls):
+    import sys
+
+    needing(reg)
+    code, out, _ = run(capsys, "--registry", str(reg), "check")
+    assert code == 0 and f"installed requirement {NEEDS}" in out
+    assert pip_calls == [[sys.executable, "-m", "pip", "install", NEEDS]]  # once, for the one spec that needs it
+
+
+def test_check_installs_what_the_specs_it_extends_need(capsys, reg, fake, pip_calls):
+    needing(reg, "png")  # png-apng extends png
+    code, out, _ = run(capsys, "--registry", str(reg), "check", "png-apng")
+    assert code == 0 and len(pip_calls) == 1 and out.count("installed requirement") == 1
+
+
+def test_check_can_leave_the_packages_alone_and_say_what_is_missing(capsys, reg, fake, pip_calls):
+    needing(reg)
+    code, out, _ = run(capsys, "--registry", str(reg), "check", "--no-requirements")
+    assert code == 1 and pip_calls == []
+    assert f"FAILED:  gif/gif: needs Python packages that are not installed (pip install {NEEDS})" in out
+    assert not any(c["cmd"][3].endswith("gif.fan") for c in fake.calls)  # Fandango is not asked to fail on it
+
+
+def test_check_says_when_a_package_cannot_be_installed(capsys, reg, fake, monkeypatch):
+    import subprocess as sp
+
+    needing(reg)
+    monkeypatch.setattr("fanbase.manager.subprocess.run", lambda cmd, **kw: sp.CompletedProcess(cmd, 1, "", "ERROR: no matching distribution"))
+    code, out, _ = run(capsys, "--registry", str(reg), "check")
+    assert code == 1 and f"FAILED:  gif/gif: could not install {NEEDS}" in out and "no matching distribution" in out
+
+
+def test_check_refuses_a_requirement_that_is_not_a_package(capsys, reg, fake, pip_calls):
+    republish(reg, "gif", pip=["--index-url=http://example.org/simple"])
+    code, out, _ = run(capsys, "--registry", str(reg), "check")
+    assert code == 1 and "FAILED:  gif/gif: refusing requirement '--index-url=http://example.org/simple'" in out
+    assert pip_calls == []
+
+
+def test_publish_takes_the_same_option(capsys, reg):
+    with pytest.raises(SystemExit) as exc:
+        main(["--registry", str(reg), "publish", "--help"])
+    assert exc.value.code == 0
+    assert "--no-requirements" in capsys.readouterr().out

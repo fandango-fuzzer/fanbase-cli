@@ -225,7 +225,8 @@ fanbase publish                  # branch, commit, push, and a pull request (nee
   `--into DIR` to put it in another checkout, such as your own registry.
 - `check [SPEC...]` verifies that `metadata.yml` and `index.yml` are up to date, that what specs extend
   exists, and that each spec makes Fandango produce inputs (it needs `fandango` installed; `--count N`,
-  `--timeout S`, `--no-generate`). It notes specs with no description, authors or license, and `--strict`
+  `--timeout S`, `--no-generate`). The Python packages a spec imports are installed first, as `fandango -F`
+  does, so a spec that needs one is checked rather than failing on an import; `--no-requirements` only says which are missing. It notes specs with no description, authors or license, and `--strict`
   makes that a failure. `--base REGISTRY` also demands that a spec that changed since then has a new version.
 - `changes --base REGISTRY` lists what was added, changed and removed since another registry or release
   (`--markdown` for release notes, `--check` to fail when a changed spec kept its version).

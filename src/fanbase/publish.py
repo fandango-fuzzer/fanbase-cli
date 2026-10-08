@@ -107,7 +107,8 @@ def cmd_publish(args, ctx: Context) -> int:
     if not plan.specs:
         raise RegistryError("nothing to publish: no spec has been added, changed or removed")
 
-    report = run_checks(reg, [], count=args.count, generate_inputs=not args.no_generate, say=lambda line: print(line, file=sys.stderr))
+    report = run_checks(reg, [], count=args.count, generate_inputs=not args.no_generate,
+                       requirements=not args.no_requirements, say=lambda line: print(line, file=sys.stderr))
     for line in report.warnings:
         print(clean(f"warning: {line}"), file=sys.stderr)
     if report.failures:

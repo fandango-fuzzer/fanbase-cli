@@ -21,7 +21,15 @@ from packaging.version import InvalidVersion, Version
 from fanbase.config import Config
 from fanbase.context import Context
 from fanbase.deps import check_version, closure, identity, parse_extends, self_names
-from fanbase.manager import entry_sha, install, spec_path, split_ref
+from fanbase.manager import (
+    Installed,
+    entry_sha,
+    install,
+    install_requirements,
+    requirements_to_install,
+    spec_path,
+    split_ref,
+)
 from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean
 from fanbase.registry import (
@@ -338,14 +346,35 @@ def find_fandango() -> str | None:
     return str(beside) if beside.is_file() else None
 
 
-def generate(reg: Registry, entry: Entry, ctx: Context, count: int, timeout: int, fandango: str) -> str | None:
+def _requirements(installed: list[Installed], label: str, install_them: bool, say) -> str | None:
+    """Get the Python packages these specs import: installed, or, if not to be, said to be missing.
+    None if all is well; else why not."""
+    for done in installed:
+        who = "" if str(done) == label else f"{done}: "
+        try:
+            missing = requirements_to_install(done.meta)
+            if missing and install_them:
+                install_requirements(missing)
+        except RegistryError as exc:
+            return f"{who}{exc}"
+        if missing and not install_them:
+            return f"{who}needs Python packages that are not installed (pip install {' '.join(missing)})"
+        for requirement in missing:
+            say(f"  installed requirement {requirement}")
+    return None
+
+
+def generate(reg: Registry, entry: Entry, ctx: Context, count: int, timeout: int, fandango: str,
+             install_requirements_: bool = True, say=print) -> str | None:
     """Make Fandango produce inputs from a spec, with what it extends installed where its
-    include() looks. None if it did; else why not."""
+    include() looks, and the Python packages they import installed too. None if it produced
+    inputs; else why not."""
     tmp = Path(tempfile.mkdtemp(prefix="fanbase-check-"))
     try:
         library, out = tmp / "library", tmp / "out"
-        for dep_reg, dep in closure(ctx, reg, entry):
-            install(dep_reg, dep, library)
+        installed = [install(dep_reg, dep, library) for dep_reg, dep in closure(ctx, reg, entry)]
+        if why := _requirements(installed, str(entry), install_requirements_, say):
+            return why
         env = {**os.environ, "FANDANGO_PATH": str(library)}
         cmd = [fandango, "fuzz", "-f", str(spec_path(library, entry.format, entry.kind, reg.name)),
                "-n", str(count), "-d", str(out)]
@@ -376,7 +405,7 @@ class Report:
 
 
 def run_checks(reg: Registry, refs: list[str], *, count: int = 3, timeout: int = 300, generate_inputs: bool = True,
-               base: str | None = None, strict: bool = False, say=print) -> Report:
+               base: str | None = None, strict: bool = False, requirements: bool = True, say=print) -> Report:
     """Everything `fanbase check` looks at. `say` is told what is going on, one line at a time."""
     report = Report([], [])
 
@@ -419,7 +448,7 @@ def run_checks(reg: Registry, refs: list[str], *, count: int = 3, timeout: int =
             gen_ctx = Context(default=reg, config=Config())
         try:
             for entry in selected:
-                why = generate(reg, entry, gen_ctx, count, timeout, fandango)
+                why = generate(reg, entry, gen_ctx, count, timeout, fandango, requirements, say)
                 if why:
                     report.failures.append(f"{entry}: {why}")
                 else:
@@ -438,7 +467,7 @@ def cmd_check(args, ctx: Context) -> int:
     reg = checkout(ctx)
     report = run_checks(
         reg, args.refs, count=args.count, timeout=args.timeout, generate_inputs=not args.no_generate,
-        base=args.base, strict=args.strict,
+        base=args.base, strict=args.strict, requirements=not args.no_requirements,
     )
     for line in report.warnings:
         print(clean(f"warning: {line}"))
