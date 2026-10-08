@@ -25,7 +25,13 @@ from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.doi import cmd_doi
 from fanbase.evaluate import cmd_evaluate, cmd_targets
 from fanbase.incident_cmds import cmd_incidents_open, cmd_incidents_send
-from fanbase.incident_track import cmd_incidents_list, cmd_incidents_show, cmd_incidents_track, cmd_incidents_verify
+from fanbase.incident_track import (
+    cmd_incidents_list,
+    cmd_incidents_show,
+    cmd_incidents_tracked,
+    cmd_incidents_track,
+    cmd_incidents_verify,
+)
 from fanbase.manager import (
     FandangoMismatch,
     Installed,
@@ -724,7 +730,12 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--fixed-in", metavar="VERSION", help="the version that fixed it")
     q.add_argument("--fixed-on", metavar="DATE", help="when that version came out")
     q.add_argument("--note", metavar="TEXT")
+    q.add_argument("--forget", action="store_true", help="take it out of the tracking, in this record's and in yours")
+    q.add_argument("--no-global", action="store_true", help="note it in this record only, not in your own file of every incident")
     q.set_defaults(fn=cmd_incidents_track)
+    q = inc_sub.add_parser("tracked", help="every incident you have noted anything about, whichever record it was in, the soonest to be public first")
+    q.add_argument("--within", type=int, metavar="DAYS", help="only those that may be public within this many days (or already may be)")
+    q.set_defaults(fn=cmd_incidents_tracked)
     q = inc_sub.add_parser("verify", help="run the input an incident kept against the parser as it is now: is it fixed?")
     q.add_argument("folder", metavar="DIR")
     q.add_argument("id", help="an incident's id, or the start of it")

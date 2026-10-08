@@ -10,7 +10,11 @@ broke. The person who found it has to tell the vendor, in private, and wait. The
 
 The clock is the usual one (OSS-Fuzz, Project Zero): a bug may be made public 90 days after it was reported, or 30 days
 after it was fixed if that comes first. It is a reminder of that, not a rule fanbase enforces; fanbase never makes anything public.
-What is tracked is in `tracking.yml` in the record's folder, which only the person who can read the record can read.
+What is tracked is in `tracking.yml` in the record's folder and, for every record there will ever be, in one file of
+the user's own, `incidents.yml` in the data folder ($FANBASE_INCIDENTS, else $XDG_DATA_HOME/fanbase, else
+~/.local/share/fanbase): the same bug found again next week is the same incident (its id says the spec, the target
+and the cause), and is already reported. Only the person who can read the record can read either (mode 0600), and
+neither is ever in a registry.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from fanbase.output import clean
 from fanbase.registry import RegistryError
 
 TRACKING = "tracking.yml"
+ENV_INCIDENTS = "FANBASE_INCIDENTS"
 DAYS_TO_PUBLIC = 90
 DAYS_AFTER_FIX = 30
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
@@ -53,8 +58,15 @@ def load_record(folder: Path) -> dict:
     return manifest
 
 
-def load_tracking(folder: Path) -> dict:
-    path = folder / TRACKING
+def global_path() -> Path:
+    """The user's own file of what has been done about every incident they have been told of."""
+    if explicit := os.environ.get(ENV_INCIDENTS):
+        return Path(explicit)
+    base = os.environ.get("XDG_DATA_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "share") / "fanbase" / "incidents.yml"
+
+
+def _read(path: Path) -> dict:
     if not path.is_file():
         return {}
     try:
@@ -62,16 +74,17 @@ def load_tracking(folder: Path) -> dict:
     except (OSError, yaml.YAMLError):
         raise RegistryError(f"{path} could not be read") from None
     found = data.get("incidents") if isinstance(data, dict) else None
-    if not isinstance(found, dict):
+    if not isinstance(found, dict) or not all(isinstance(v, dict) for v in found.values()):
         raise RegistryError(f"{path} is not a tracking file")
     return found
 
 
-def save_tracking(folder: Path, tracking: dict) -> None:
-    path = folder / TRACKING
-    text = "# what has been done about each incident of this record; `fanbase incidents track` writes it\n" + \
-        yaml.safe_dump({"incidents": tracking}, sort_keys=True, allow_unicode=True)
-    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".tracking.")
+def _write(path: Path, tracking: dict, what: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.name == "fanbase":  # (the folder that is ours; a record's folder is its own)
+        os.chmod(path.parent, 0o700)
+    text = f"# {what}; `fanbase incidents track` writes it\n" + yaml.safe_dump({"incidents": tracking}, sort_keys=True, allow_unicode=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tracking.")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
@@ -80,6 +93,28 @@ def save_tracking(folder: Path, tracking: dict) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def load_tracking(folder: Path) -> dict:
+    return _read(folder / TRACKING)
+
+
+def save_tracking(folder: Path, tracking: dict) -> None:
+    _write(folder / TRACKING, tracking, "what has been done about each incident of this record")
+
+
+def load_global() -> dict:
+    return _read(global_path())
+
+
+def save_global(tracking: dict) -> None:
+    _write(global_path(), tracking, "what has been done about every incident you have been told of, whichever record it was in")
+
+
+def known(folder_tracking: dict, everywhere: dict, incident_id: str) -> dict | None:
+    """What is known of an incident: what this record says, over what every record has said."""
+    merged = {**(everywhere.get(incident_id) or {}), **(folder_tracking.get(incident_id) or {})}
+    return merged or None
 
 
 def pick(manifest: dict, wanted: str) -> dict:
@@ -135,14 +170,16 @@ def clock(track: dict | None, now: datetime.date | None = None) -> tuple[str, da
 
 def cmd_incidents_list(args, ctx: Context) -> int:
     folder = Path(args.folder)
-    manifest, tracking = load_record(folder), load_tracking(folder)
+    manifest, tracking, everywhere = load_record(folder), load_tracking(folder), load_global()
     found = manifest["incidents"]
     if not found:
         print("nothing broke in this record")
         return 0
     width = max(len(i["id"]) for i in found)
     for incident in found:
-        status, _ = clock(tracking.get(incident["id"]))
+        status, _ = clock(known(tracking, everywhere, incident["id"]))
+        if incident["id"] not in tracking and incident["id"] in everywhere:
+            status += " (tracked in an earlier record)"
         seen = f"{incident.get('occurrences', '?')}x" + (f", {incident['confirmed']} again" if incident.get("confirmed") is not None else "")
         print(clean(f"  {incident['id']:<{width}}  {incident.get('kind', '?')} of {incident.get('target', '?')} {incident.get('target_version') or ''} "
                     f"on {incident.get('spec', '?')} ({seen}): {status}"))
@@ -160,17 +197,26 @@ def cmd_incidents_show(args, ctx: Context) -> int:
     except OSError:
         raise RegistryError(f"{report} is not there") from None
     print(clean(text), end="")
-    track = load_tracking(folder).get(incident["id"])
+    track = known(load_tracking(folder), load_global(), incident["id"])
     if track:
-        print(f"\n## Tracked\n\n{yaml.safe_dump(track, sort_keys=True, allow_unicode=True)}{clock(track)[0]}")
+        shown = {k: v for k, v in track.items() if k not in ("spec", "target", "kind")}
+        print(f"\n## Tracked\n\n{yaml.safe_dump(shown, sort_keys=True, allow_unicode=True)}{clock(track)[0]}")
     return 0
 
 
 def cmd_incidents_track(args, ctx: Context) -> int:
     folder = Path(args.folder)
     incident = pick(load_record(folder), args.id)
-    tracking = load_tracking(folder)
-    track = dict(tracking.get(incident["id"]) or {})
+    tracking, everywhere = load_tracking(folder), load_global()
+    if args.forget:
+        tracking.pop(incident["id"], None)
+        everywhere.pop(incident["id"], None)
+        save_tracking(folder, tracking)
+        if not args.no_global:
+            save_global(everywhere)
+        print(f"{incident['id']}: forgotten")
+        return 0
+    track = dict(known(tracking, everywhere, incident["id"]) or {})
     changes = {
         "vendor": args.vendor, "reference": args.reference, "note": args.note, "fixed_in": args.fixed_in,
         "reported": parse_date(args.reported, "--reported") if args.reported else None,
@@ -187,7 +233,34 @@ def cmd_incidents_track(args, ctx: Context) -> int:
         raise RegistryError("it cannot have been fixed before it was reported")
     tracking[incident["id"]] = track
     save_tracking(folder, tracking)
+    if not args.no_global:  # (with what it is, so that it can be read without the record)
+        everywhere[incident["id"]] = {**track, **{k: clean(str(incident[k]))[:120] for k in ("spec", "target", "kind") if incident.get(k)}}
+        save_global(everywhere)
     print(f"{incident['id']}: {clock(track)[0]}")
+    return 0
+
+
+def cmd_incidents_tracked(args, ctx: Context) -> int:
+    """Every incident you have noted anything about, whichever record it was in, the soonest to be public first."""
+    everywhere = load_global()
+    if not everywhere:
+        print(f"nothing tracked yet ({global_path()})")
+        return 0
+    now = today()
+    rows = []
+    for incident_id, track in everywhere.items():
+        status, public = clock(track, now)
+        if args.within is not None and (public is None or (public - now).days > args.within):
+            continue
+        rows.append((public or datetime.date.max, incident_id, track, status))
+    if not rows:
+        print(f"nothing is to be public within {args.within} days")
+        return 0
+    width = max(len(r[1]) for r in rows)
+    for _, incident_id, track, status in sorted(rows, key=lambda r: (r[0], r[1])):
+        what = " ".join(x for x in (track.get("kind"), track.get("target") and f"of {track['target']}", track.get("spec") and f"on {track['spec']}") if x)
+        vendor = f" to {track['vendor']}" if track.get("vendor") else ""
+        print(clean(f"  {incident_id:<{width}}  {what}{vendor}: {status}"))
     return 0
 
 

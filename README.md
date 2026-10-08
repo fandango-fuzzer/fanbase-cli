@@ -500,6 +500,14 @@ fanbase incidents verify opened/ imagemagick-crash      # run the kept input aga
 fanbase incidents track opened/ imagemagick-crash --fixed-in 7.1.2 --fixed-on 2026-11-20
 ```
 
+Every `track` is noted twice: in the record's own `tracking.yml`, and in a file of yours, `incidents.yml` in your data folder
+(`$FANBASE_INCIDENTS`, else `$XDG_DATA_HOME/fanbase`, else `~/.local/share/fanbase`; mode 0600, never in a registry). The same bug
+found again next week is the same incident (its id says the spec, the target and the cause), so the new record already
+shows it as reported ("tracked in an earlier record"), and what you add there is added to what was known. `fanbase incidents
+tracked` lists every incident you have noted anything about, whichever record it was in, the soonest to be public first
+(`--within 30` for what may be public within a month); `track --forget` takes one out of both; `--no-global` keeps a note in the
+record only.
+
 `track` keeps the usual clock (OSS-Fuzz, Project Zero): a bug may be made public 90 days after it was reported, or 30 days after
 it was fixed if that comes first; `list` shows the date for each. It is a reminder, not a rule: fanbase never makes anything
 public. What is tracked is in `tracking.yml` in the record's folder (mode 0600). `verify` runs the input an incident kept

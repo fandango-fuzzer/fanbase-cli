@@ -119,6 +119,12 @@ def own_config(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def own_incidents(tmp_path_factory, monkeypatch):
+    """No test reads or writes the file of incidents of whoever runs the tests."""
+    monkeypatch.setenv("FANBASE_INCIDENTS", str(tmp_path_factory.mktemp("incidents") / "incidents.yml"))
+
+
+@pytest.fixture(autouse=True)
 def own_cache(tmp_path_factory, monkeypatch):
     """No test reads or fills the cache of whoever runs the tests."""
     monkeypatch.setenv("FANBASE_CACHE", str(tmp_path_factory.mktemp("cache")))

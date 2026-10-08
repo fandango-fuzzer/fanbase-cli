@@ -244,3 +244,143 @@ def test_a_manifest_cannot_point_outside_the_record(capsys, reg, record, tmp_pat
     (record / "manifest.json").write_text(json.dumps(manifest))
     code, out, _ = run(capsys, "--registry", str(reg), "incidents", "verify", str(record), the_id(record))
     assert "../../outside.bin: not there" in out and "still crash" not in out
+
+
+# --- the file of every incident, whichever record it was in
+
+def another_record(capsys, reg, tmp_path, name="again"):
+    """The same bug, found again next week: a new record in a new folder."""
+    code, _, _ = run(capsys, "--registry", str(reg), "evaluate", "png", "-n", "4", "--incidents", str(tmp_path / name))
+    assert code == 0
+    folder, = (tmp_path / name).glob("incidents-*")
+    return folder
+
+
+def global_file():
+    return incident_track.global_path()
+
+
+@posix
+def test_the_global_file_is_the_users_own_and_never_the_real_one(capsys, record):
+    import os
+
+    assert "FANBASE_INCIDENTS" in os.environ and "incidents.yml" in str(global_file())
+    assert not str(global_file()).startswith(str(incident_track.Path.home() / ".local"))  # (the tests do not touch yours)
+
+
+@posix
+def test_track_notes_it_in_the_record_and_in_the_users_file(capsys, record):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28", "--vendor", "ImageMagick")
+    here = yaml.safe_load((record / "tracking.yml").read_text())["incidents"][the_id(record)]
+    everywhere = yaml.safe_load(global_file().read_text())["incidents"][the_id(record)]
+    assert here == {"reported": "2026-09-28", "vendor": "ImageMagick"}
+    assert everywhere == {**here, "spec": "png/png", "target": "crasher", "kind": "crash"}  # (with what it is: it can be read without the record)
+    assert global_file().stat().st_mode & 0o777 == 0o600
+
+
+@posix
+def test_the_same_bug_found_again_is_already_reported(capsys, reg, record, tmp_path):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28", "--vendor", "ImageMagick", "--reference", "issue 4711")
+    later = another_record(capsys, reg, tmp_path)
+    assert the_id(later) == the_id(record)  # (same spec, same target, same cause: the same incident)
+    _, out, _ = run(capsys, "incidents", "list", str(later))
+    assert "reported 2026-09-28; may be public from 2026-12-27 (80 days) (tracked in an earlier record)" in out
+    _, shown, _ = run(capsys, "incidents", "show", str(later), the_id(later))
+    assert "vendor: ImageMagick" in shown and "reference: issue 4711" in shown and "spec:" not in shown.split("## Tracked")[1]
+
+
+@posix
+def test_what_is_added_in_a_later_record_is_added_to_what_was_known(capsys, reg, record, tmp_path):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-08-01", "--vendor", "ImageMagick")
+    later = another_record(capsys, reg, tmp_path)
+    code, out, _ = run(capsys, "incidents", "track", str(later), the_id(later), "--fixed-in", "7.1.2", "--fixed-on", "2026-09-20")
+    assert code == 0 and "reported 2026-08-01, fixed 2026-09-20; may be public from 2026-10-20 (12 days)" in out  # (it was reported in the other record)
+    assert yaml.safe_load(global_file().read_text())["incidents"][the_id(record)]["fixed_in"] == "7.1.2"
+    assert "vendor" in yaml.safe_load((later / "tracking.yml").read_text())["incidents"][the_id(later)]  # (this record is complete by itself)
+
+
+@posix
+def test_a_fix_cannot_come_before_a_report_made_in_another_record(capsys, reg, record, tmp_path):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-20")
+    later = another_record(capsys, reg, tmp_path)
+    code, _, err = run(capsys, "incidents", "track", str(later), the_id(later), "--fixed-in", "1", "--fixed-on", "2026-09-01")
+    assert code == 2 and "before it was reported" in err
+
+
+@posix
+def test_this_record_has_the_last_word_over_the_file(capsys, record):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-01")
+    folder_file = record / "tracking.yml"
+    data = yaml.safe_load(folder_file.read_text())
+    data["incidents"][the_id(record)]["reported"] = "2026-09-10"  # (changed by hand here)
+    folder_file.write_text(yaml.safe_dump(data))
+    _, out, _ = run(capsys, "incidents", "list", str(record))
+    assert "reported 2026-09-10" in out
+
+
+@posix
+def test_not_noted_in_the_users_file_if_not_wanted(capsys, record):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28", "--no-global")
+    assert (record / "tracking.yml").is_file() and not global_file().exists()
+
+
+@posix
+def test_forgetting_takes_it_out_of_both(capsys, record):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28")
+    code, out, _ = run(capsys, "incidents", "track", str(record), the_id(record), "--forget")
+    assert code == 0 and "forgotten" in out
+    assert the_id(record) not in yaml.safe_load((record / "tracking.yml").read_text())["incidents"]
+    assert the_id(record) not in yaml.safe_load(global_file().read_text())["incidents"]
+    assert "not reported yet" in run(capsys, "incidents", "list", str(record))[1]
+
+
+@posix
+def test_tracked_lists_everything_the_soonest_first(capsys, reg, record, tmp_path):
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28", "--vendor", "ImageMagick")
+    # a second incident, from another target, in another record
+    target(reg, "second", CRASH.replace("the parser said this", "something else entirely"))
+    (reg / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["second"]}))
+    settle(reg)
+    other = another_record(capsys, reg, tmp_path, "other")
+    run(capsys, "incidents", "track", str(other), the_id(other), "--reported", "2026-07-15", "--vendor", "Libfoo")
+    _, out, _ = run(capsys, "incidents", "tracked")
+    lines = out.strip().splitlines()
+    assert len(lines) == 2 and "crash of second on png/png to Libfoo: reported 2026-07-15; may be public from 2026-10-13 (5 days)" in lines[0]
+    assert "crash of crasher on png/png to ImageMagick: reported 2026-09-28" in lines[1]
+    _, soon, _ = run(capsys, "incidents", "tracked", "--within", "10")
+    assert len(soon.strip().splitlines()) == 1 and "Libfoo" in soon
+
+
+@posix
+def test_nothing_tracked_and_nothing_soon(capsys, record):
+    code, out, _ = run(capsys, "incidents", "tracked")
+    assert code == 0 and "nothing tracked yet" in out
+    run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28")
+    assert "nothing is to be public within 5 days" in run(capsys, "incidents", "tracked", "--within", "5")[1]
+
+
+@posix
+def test_a_users_file_that_is_not_one_is_refused_and_not_overwritten(capsys, record):
+    global_file().parent.mkdir(parents=True, exist_ok=True)
+    global_file().write_text("- not\n- a mapping\n")
+    code, _, err = run(capsys, "incidents", "track", str(record), the_id(record), "--reported", "2026-09-28")
+    assert code == 2 and "is not a tracking file" in err and global_file().read_text() == "- not\n- a mapping\n"
+
+
+def test_where_the_file_is(monkeypatch, tmp_path):
+    monkeypatch.delenv("FANBASE_INCIDENTS")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert incident_track.global_path() == tmp_path / "data" / "fanbase" / "incidents.yml"
+    monkeypatch.delenv("XDG_DATA_HOME")
+    assert incident_track.global_path() == incident_track.Path.home() / ".local" / "share" / "fanbase" / "incidents.yml"
+    monkeypatch.setenv("FANBASE_INCIDENTS", str(tmp_path / "mine.yml"))
+    assert incident_track.global_path() == tmp_path / "mine.yml"
+
+
+@posix
+def test_the_folder_of_the_file_is_private_and_what_is_written_is_cleaned(capsys, record, tmp_path, monkeypatch):
+    monkeypatch.setenv("FANBASE_INCIDENTS", str(tmp_path / "data" / "fanbase" / "incidents.yml"))
+    run(capsys, "incidents", "track", str(record), the_id(record), "--vendor", "Evil\x1b[31m Corp\x07")
+    assert (tmp_path / "data" / "fanbase").stat().st_mode & 0o777 == 0o700
+    saved = yaml.safe_load((tmp_path / "data" / "fanbase" / "incidents.yml").read_text())["incidents"][the_id(record)]
+    assert "\x1b" not in saved["vendor"] and "\x07" not in saved["vendor"]
