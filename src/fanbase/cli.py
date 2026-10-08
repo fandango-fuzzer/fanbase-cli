@@ -619,6 +619,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import; say which are missing")
     p.add_argument("--strict", action="store_true", help="a spec with no description, authors or license is a failure")
     p.add_argument("--base", metavar="REGISTRY", help="a registry (URL or path) to compare with: a changed spec needs a new version")
+    p.add_argument("--changed", action="store_true", help="with --base: ask Fandango only about the specs that differ from it, and what builds on them")
+    p.add_argument("-j", "--jobs", type=int, default=1, metavar="N", help="specs Fandango is asked about at the same time (default 1)")
     p.set_defaults(fn=cmd_check, local=True)
 
     p = sub.add_parser("evaluate", help="how do a spec's files do against the parsers of their format?")

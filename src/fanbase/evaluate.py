@@ -25,8 +25,7 @@ from pathlib import Path
 
 from fanbase import __version__
 from fanbase.context import Context
-from fanbase.contrib import checkout, compare_registries, find_fandango, open_base, produce
-from fanbase.deps import dependents
+from fanbase.contrib import changed_specs, checkout, find_fandango, produce
 from fanbase.incidents import IncidentLog, check_recipients, run_meta, write_private
 from fanbase.manager import entry_sha
 from fanbase.output import clean
@@ -109,16 +108,7 @@ def select(reg: Registry, ctx: Context, args) -> list[Entry]:
     if args.changed:
         if not args.base:
             raise RegistryError("--changed needs --base, the registry to compare with")
-        names = {c.spec for c in compare_registries(open_base(args.base), reg) if c.kind in ("added", "changed")}
-        chosen = [e for e in everything if str(e) in names]
-        # what builds on a spec that changed may have changed with it
-        queue = list(chosen)
-        while queue:
-            for _, found in dependents(ctx, reg, queue.pop()):
-                if found not in chosen:
-                    chosen.append(found)
-                    queue.append(found)
-        return sorted(chosen, key=str)
+        return changed_specs(reg, ctx, args.base)
     if args.all:
         return everything
     if not args.refs:

@@ -12,7 +12,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +23,7 @@ from packaging.version import InvalidVersion, Version
 
 from fanbase.config import Config
 from fanbase.context import Context
-from fanbase.deps import check_version, closure, identity, parse_extends, self_names
+from fanbase.deps import check_version, closure, dependents, identity, parse_extends, self_names
 from fanbase.manager import (
     Installed,
     entry_sha,
@@ -429,6 +431,20 @@ def open_base(base: str) -> RegistryBase:
     return open_registry(Location("url" if base.startswith(("http://", "https://")) else "path", base))
 
 
+def changed_specs(reg: Registry, ctx: Context, base: str) -> list[Entry]:
+    """The specs of `reg` that are new or different from those of the registry `base`, and everything
+    that builds on them, which may have changed with them."""
+    names = {c.spec for c in compare_registries(open_base(base), reg) if c.kind in ("added", "changed")}
+    chosen = [e for fmt in reg.formats() for e in reg.kinds(fmt) if str(e) in names]
+    queue = list(chosen)
+    while queue:
+        for _, found in dependents(ctx, reg, queue.pop()):
+            if found not in chosen:
+                chosen.append(found)
+                queue.append(found)
+    return sorted(chosen, key=str)
+
+
 def cmd_changes(args, ctx: Context) -> int:
     """What differs from another registry (an earlier release, or the public registry): added,
     changed and removed specs. For release notes, and to check that a changed spec got a new version."""
@@ -481,9 +497,17 @@ def find_fandango() -> str | None:
     return str(beside) if beside.is_file() else None
 
 
+_PIP = threading.Lock()  # checks that run side by side install packages one at a time
+
+
 def _requirements(installed: list[Installed], label: str, install_them: bool, say) -> str | None:
     """Get the Python packages these specs import: installed, or, if not to be, said to be missing.
     None if all is well; else why not."""
+    with _PIP:
+        return _requirements_locked(installed, label, install_them, say)
+
+
+def _requirements_locked(installed: list[Installed], label: str, install_them: bool, say) -> str | None:
     for done in installed:
         who = "" if str(done) == label else f"{done}: "
         try:
@@ -626,12 +650,27 @@ class Report:
     checked: int = 0
     generated: int = 0
     skipped_generation: str | None = None
+    scope: str | None = None  # what was looked at, when it was not everything
 
 
 def run_checks(reg: Registry, refs: list[str], *, count: int = 3, timeout: int = 300, generate_inputs: bool = True,
-               base: str | None = None, strict: bool = False, requirements: bool = True, say=print) -> Report:
-    """Everything `fanbase check` looks at. `say` is told what is going on, one line at a time."""
+               base: str | None = None, strict: bool = False, requirements: bool = True, say=print,
+               only_changed: bool = False, jobs: int = 1) -> Report:
+    """Everything `fanbase check` looks at. `say` is told what is going on, one line at a time.
+
+    With `only_changed` only the specs that differ from the registry `base`, and what builds on them, are looked
+    at one by one (the index and what specs extend are always looked at as a whole). With `jobs`, Fandango
+    is asked for the inputs of that many specs at a time."""
     report = Report([], [])
+    if only_changed and refs:
+        raise RegistryError("name the specs to check, or give --changed: not both")
+    if only_changed and not base:
+        raise RegistryError("--changed needs --base, the registry to compare with")
+    lock = threading.Lock()
+
+    def tell(line: str) -> None:  # (one line at a time, whichever check says it)
+        with lock:
+            say(line)
 
     # 1. metadata and the index agree with the specs, and what the specs extend works
     rows, changed, undescribed = reindex(reg, write=False)
@@ -644,6 +683,12 @@ def run_checks(reg: Registry, refs: list[str], *, count: int = 3, timeout: int =
     if refs:
         wanted = [reg.resolve(ref) for ref in refs]
         selected = [e for e in selected if e in wanted]
+    if only_changed:
+        chosen = changed_specs(reg, Context(default=reg, config=Config()), base or "")
+        selected = [e for e in selected if e in chosen]
+        total = sum(len(reg.kinds(fmt)) for fmt in reg.formats())
+        report.scope = (f"--changed: {len(selected)} of {total} specs are new, different from the base, or build on one that is"
+                        if selected else "--changed: no spec differs from the base, and none builds on one that does")
 
     # 2. a merge left unfinished
     for entry in selected:
@@ -676,14 +721,18 @@ def run_checks(reg: Registry, refs: list[str], *, count: int = 3, timeout: int =
             gen_ctx.add_registry(owner, reg)
         else:
             gen_ctx = Context(default=reg, config=Config())
+        def one(entry: Entry) -> str | None:
+            why = generate(reg, entry, gen_ctx, count, timeout, fandango, requirements, tell)
+            tell(f"  {'ok     ' if not why else 'FAILED '} {entry}")
+            return why
+
         try:
-            for entry in selected:
-                why = generate(reg, entry, gen_ctx, count, timeout, fandango, requirements, say)
-                if why:
-                    report.failures.append(f"{entry}: {why}")
-                else:
-                    report.generated += 1
-                say(f"  {'ok     ' if not why else 'FAILED '} {entry}")
+            with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+                for entry, why in zip(selected, pool.map(one, selected)):  # (reported in the order of the specs)
+                    if why:
+                        report.failures.append(f"{entry}: {why}")
+                    else:
+                        report.generated += 1
         finally:
             reg.name = was
     if strict:
@@ -698,7 +747,10 @@ def cmd_check(args, ctx: Context) -> int:
     report = run_checks(
         reg, args.refs, count=args.count, timeout=args.timeout, generate_inputs=not args.no_generate,
         base=args.base, strict=args.strict, requirements=not args.no_requirements,
+        only_changed=args.changed, jobs=args.jobs,
     )
+    if report.scope:
+        print(f"note: {report.scope}")
     for line in report.warnings:
         print(clean(f"warning: {line}"))
     for line in report.failures:

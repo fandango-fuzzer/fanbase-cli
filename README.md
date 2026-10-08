@@ -244,6 +244,10 @@ fanbase publish                  # branch, commit, push, and a pull request (nee
   `--timeout S`, `--no-generate`). The Python packages a spec imports are installed first, as `fandango -F`
   does, so a spec that needs one is checked rather than failing on an import; `--no-requirements` only says which are missing. It notes specs with no description, authors or license, and `--strict`
   makes that a failure. `--base REGISTRY` also demands that a spec that changed since then has a new version.
+  A registry of hundreds of specs cannot be run through Fandango one after the other: `-j N` asks about N specs
+  at a time (packages are still installed one spec at a time), and `--changed --base REGISTRY` asks only about the
+  specs that are new or different from that registry, and about everything that builds on them. The index and what
+  specs extend are always checked for the whole registry; a pull request's CI uses `--changed`, `main` checks all.
 - `changes --base REGISTRY` lists what was added, changed and removed since another registry or release
   (`--markdown` for release notes, `--check` to fail when a changed spec kept its version).
 - `publish` refreshes `metadata.yml` and `index.yml`, runs `check`, says what it is going to do, and asks
