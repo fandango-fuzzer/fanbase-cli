@@ -236,3 +236,21 @@ def test_a_target_that_does_not_exist_or_is_not_one(tmp_path):
 def test_the_placeholders_are_filled_in(tmp_path):
     target = make(tmp_path, "paths", run=["{python}", "-c", "import sys; sys.exit(0 if sys.argv[1:] == ['{dir}', sys.argv[2]] else 1)", "{dir}", "{file}"])
     assert judge(target, sample(tmp_path)).category == ACCEPTED
+
+
+def test_addresses_in_memory_do_not_make_reasons_differ(tmp_path):
+    harness = "import sys\nprint('[in#0/mpegts @ 0x7c45014000] could not find codec parameters', file=sys.stderr)\nsys.exit(1)\n"
+    other = harness.replace("0x7c45014000", "0x7a89014000")
+    a = judge(make(tmp_path, "a", harness), sample(tmp_path)).reason
+    b = judge(make(tmp_path, "b", other), sample(tmp_path)).reason
+    assert a == b == "[in#0/mpegts @ 0xN] could not find codec parameters"
+
+
+def test_sizes_and_numbers_do_not_make_reasons_differ(tmp_path):
+    def reason(text):
+        harness = f"import sys\nprint({text!r}, file=sys.stderr)\nsys.exit(1)\n"
+        return judge(make(tmp_path, "r", harness), sample(tmp_path)).reason
+
+    assert reason("Picture size 58810x7219 is invalid") == reason("Picture size 36x33424 is invalid") == "Picture size NxN is invalid"
+    assert reason("bad marker 0xe9 at offset 123456") == "bad marker 0xN at offset N"
+    assert reason("SOF0 not supported") == "SOF0 not supported"  # a short number stays: it can be what the reason is

@@ -202,7 +202,9 @@ def version_of(target: Target) -> str | None:
 
 # --- judging one file
 
-_DIGITS = re.compile(r"\d{4,}")
+_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")  # ffmpeg says where in memory it was, which is different each time
+_DIMENSIONS = re.compile(r"\d+x\d+")  # an image size: different for every file that is too big
+_DIGITS = re.compile(r"\d{3,}")
 
 
 def _reason(text: str, path: Path) -> str:
@@ -214,7 +216,8 @@ def _reason(text: str, path: Path) -> str:
     line = lines[-1] if any("Traceback (most recent call last)" in line for line in lines) else lines[0]
     for name in (str(path), path.name, str(path.parent)):
         line = line.replace(name, "<file>")
-    return clean(_DIGITS.sub("N", " ".join(line.split())))[:100]
+    line = _DIMENSIONS.sub("NxN", _ADDRESS.sub("0xN", " ".join(line.split())))
+    return clean(_DIGITS.sub("N", line))[:100]
 
 
 def judge(target: Target, path: Path, *, timeout: int = 20, memory_mb: int = 2048, cwd: Path | None = None) -> Verdict:
