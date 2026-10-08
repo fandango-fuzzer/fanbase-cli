@@ -69,7 +69,7 @@ def cmd_diff(args, ctx: Context) -> int:
         have = installed_copy(spec)
         if have is None:
             raise RegistryError(f"{spec} is not installed, so there is nothing to compare; `fanbase diff A B` compares two specs of a registry")
-        old, new = have.path.read_text(encoding="utf-8", errors="replace"), _read(reg, entry)
+        old, new = have.path.read_bytes().decode("utf-8", errors="replace"), _read(reg, entry)
         names: tuple[str, str] = (f"installed {spec}", f"registry {spec}")
     else:
         pairs = [ctx.resolve(ref) for ref in args.refs]

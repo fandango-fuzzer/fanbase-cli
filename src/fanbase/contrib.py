@@ -71,7 +71,7 @@ def git_user() -> str | None:
 def refresh(reg: Registry) -> tuple[list[dict], list[Entry], list[Entry]]:
     """Reindex the checkout and write its index.yml, as `fanbase reindex` does."""
     rows, changed, undescribed = reindex(reg)
-    (reg.root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
+    (reg.root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8", newline="\n")
     return rows, changed, undescribed
 
 
@@ -147,15 +147,15 @@ def cmd_new(args, ctx: Context) -> int:
 
     folder.mkdir(parents=True)
     try:
-        (folder / f"{kind}.fan").write_text(_template(kind, args.description or "", includes), encoding="utf-8")
-        (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        (folder / f"{kind}.fan").write_text(_template(kind, args.description or "", includes), encoding="utf-8", newline="\n")
+        (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
         refresh(reg)
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         if not any((folder.parent).iterdir()):
             folder.parent.rmdir()
         raise
-    print(f"created {folder.relative_to(reg.root)}/ ({kind}.fan, metadata.yml)")
+    print(f"created {folder.relative_to(reg.root).as_posix()}/ ({kind}.fan, metadata.yml)")
     print(f"next: edit {kind}.fan, then `fanbase check {kind}`")
     return 0
 
@@ -317,7 +317,7 @@ def _write_fork(fork: _Fork, target: Registry, owner: str, include_map: dict[str
                 file=sys.stderr,
             )
         (folder / f"{kind}.fan").write_bytes(written)
-        (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8", newline="\n")
     except BaseException:
         _remove(folder)
         raise
@@ -325,7 +325,7 @@ def _write_fork(fork: _Fork, target: Registry, owner: str, include_map: dict[str
 
 
 def _shown(target: Registry, fork: _Fork) -> str:
-    return f"{(target.specs_dir / fork.entry.format / fork.kind).relative_to(target.root)}/"
+    return f"{(target.specs_dir / fork.entry.format / fork.kind).relative_to(target.root).as_posix()}/"
 
 
 def _remove(folder: Path) -> None:
@@ -371,7 +371,7 @@ def cmd_fork(args, ctx: Context) -> int:
         if fork.reuse:
             print(f"kept {_shown(target, fork)}, which is a fork of {_where(fork.source, fork.entry)} already")
         else:
-            print(f"forked {_where(fork.source, fork.entry)} into {next(done).relative_to(target.root)}/")
+            print(f"forked {_where(fork.source, fork.entry)} into {next(done).relative_to(target.root).as_posix()}/")
     if getattr(args, "with_deps", False) and len(plan) == 1:
         print("what it extends is in this registry already: nothing else to copy")
     root = plan[-1]

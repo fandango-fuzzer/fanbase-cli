@@ -526,7 +526,7 @@ def cmd_reindex(args, ctx: Context) -> int:
         print(f"{INDEX_FILENAME} and metadata.yml are up to date")
         return 0
 
-    index_file.write_text(index_text, encoding="utf-8")
+    index_file.write_text(index_text, encoding="utf-8", newline="\n")
     print(f"wrote {INDEX_FILENAME}: {len(rows)} specs in {len(reg.formats())} formats")
     if changed:
         print(f"updated metadata.yml for {len(changed)} spec(s)")

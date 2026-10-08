@@ -304,6 +304,9 @@ def judge(target: Target, path: Path, *, timeout: int = 10, memory_mb: int = 204
     except subprocess.TimeoutExpired as exc:
         return Verdict(TIMEOUT, f"no answer in {timeout} seconds", HANG_KIND, None,
                        (exc.stderr or b"")[:INCIDENT_STDERR] if isinstance(exc.stderr, bytes) else b"", shown)
+    except (FileNotFoundError, PermissionError) as exc:
+        # what exit status 127 and 126 are behind the limits wrapper on POSIX: the target cannot run, which says nothing about the file
+        return Verdict(ERROR, clean(f"cannot run {argv[0]}: {exc.strerror or exc.__class__.__name__}")[:100])
     except OSError as exc:
         raise TargetError(f"cannot run the target {target.name}: {exc}") from None
 
