@@ -315,3 +315,62 @@ def test_the_real_record_of_a_quiet_run_is_as_big_as_a_loud_one(capsys, reg, cra
     evaluate(capsys, reg, "-n", "4", "--incidents", str(tmp_path / "quiet"), "--incident-recipients", str(recipients), "--targets", "strict")
     evaluate(capsys, crashing, "-n", "4", "--incidents", str(tmp_path / "loud"), "--incident-recipients", str(recipients))
     assert (tmp_path / "quiet" / BUNDLE_NAME).stat().st_size == (tmp_path / "loud" / BUNDLE_NAME).stat().st_size
+
+
+# --- the record stays small enough to be mailed, whatever broke
+
+COUNT_CRASH = (  # a different message for each of ten files, so each is a cause of its own
+    "import os, pathlib, signal, sys\n"
+    "print('message', pathlib.Path(sys.argv[1]).read_bytes()[-1:].decode(), file=sys.stderr, flush=True)\n"
+    "os.kill(os.getpid(), signal.SIGSEGV)\n"
+)
+
+
+@pytest.fixture
+def many_causes(reg):
+    target(reg, "varied", COUNT_CRASH)
+    (reg / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["varied"]}))
+    settle(reg)
+    return reg
+
+
+@posix
+def test_causes_beyond_the_limit_are_counted_not_written(capsys, many_causes, fandango, tmp_path, monkeypatch):
+    monkeypatch.setattr(incidents, "MAX_INCIDENTS", 3)
+    evaluate(capsys, many_causes, "-n", "10", "--incidents", str(tmp_path / "private"))
+    folder, = (tmp_path / "private").glob("incidents-*")
+    manifest = json.loads((folder / "manifest.json").read_text())
+    assert len(manifest["incidents"]) == 3 and manifest["not_itemised"] == 7
+    assert "7 further occurrence(s)" in (folder / "REPORT.md").read_text()
+
+
+@posix
+def test_inputs_beyond_the_budget_are_described_not_kept(capsys, many_causes, fandango, tmp_path, monkeypatch):
+    monkeypatch.setattr(incidents, "MAX_KEPT", 3 * len(SECRET_INPUT + b" 0"))
+    evaluate(capsys, many_causes, "-n", "10", "-j", "1", "--incidents", str(tmp_path / "private"))
+    folder, = (tmp_path / "private").glob("incidents-*")
+    manifest = json.loads((folder / "manifest.json").read_text())
+    inputs = [i for incident in manifest["incidents"] for i in incident["inputs"]]
+    assert len(inputs) == 10 and sum(i["file"] is not None for i in inputs) == 3  # all are listed; three are kept
+    assert all(len(i["sha256"]) == 64 for i in inputs) and len(list(folder.rglob("input-*"))) == 3
+
+
+def test_the_worst_record_can_be_mailed(tmp_path, monkeypatch):
+    from fanbase.incident_cmds import MAX_MAIL
+    from fanbase.targets import CRASH_KIND, Target, Verdict
+
+    monkeypatch.setattr(incidents, "version_of", lambda target: "1.0")
+    log = incidents.IncidentLog()
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"\x01" * (incidents.MAX_INPUT - 1))  # (as big as an input may be)
+    for n in range(incidents.MAX_INCIDENTS + 40):
+        t = Target(f"target-{n % 7}", tmp_path, "T", ("png",), ("run",))
+        name = chr(97 + n % 26) + chr(97 + n // 26)  # (letters: a number of three digits is made the same as any other)
+        stderr = f"cause {name}\n".encode() + bytes(range(256)) * 31  # (about as much as a target may say: a cause of its own)
+        verdict = Verdict("crash", "", CRASH_KIND, -11, stderr, ("a-long-command", "x" * 200, "INPUT"))
+        for _ in range(5):  # (the same cause again and again adds nothing)
+            log.record(spec=f"png/spec-{n % 22}", version="1.0", sha256="0" * 64, target=t, file=big, verdict=verdict, confirmed=True)
+    meta = incidents.run_meta(1, 100)
+    data = incidents.build_bundle(log, meta)
+    assert len(data) <= MAX_MAIL - (1 << 20), len(data)  # (with room for age's own header and padding)
+    assert len(log.incidents) == incidents.MAX_INCIDENTS

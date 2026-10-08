@@ -330,7 +330,8 @@ fanbase evaluate --all --hide-crashes --incidents DIR --incident-recipients reci
 - **In CI** (`--incident-recipients FILE`) it is one file, `evaluation-private.age`, encrypted with
   [age](https://age-encryption.org) to the public key(s) in `FILE`, which makes it safe in a public artifact and
   needs no secret to make. It is padded to whole megabytes and written on every run, whether or not anything broke,
-  so that its existence and its size say nothing. Nothing about it is printed, and what is public still counts a
+  so that its existence and its size say nothing (and it is never more than about 15 MB, so that it can always be mailed:
+  past 300 causes, or 8 MB of inputs, things are counted and not written down). Nothing about it is printed, and what is public still counts a
   crash or a hang as a plain error. If `age` or the key is missing, the run is refused before it starts.
 - **Make a key once**, on your machine: `age-keygen -o fanbase.key` writes the private key (keep it to yourself) and
   prints the public key, `age1...`, which goes in `recipients.txt`. Fanbase never sees the private key.

@@ -40,6 +40,12 @@ BUNDLE_NAME = "evaluation-private.age"
 PAD = 1 << 20  # the bundle is a whole number of these
 MAX_INPUT = 5 * 1024 * 1024  # an input larger than this is described, not kept
 KEEP_PER_CAUSE = 3  # inputs kept for each cause
+# The record has to stay small enough to be mailed (see incident_cmds), whatever broke: a record that was
+# refused for its size would tell whoever reads the log of a public run how much had broken. Inputs are
+# kept up to MAX_KEPT in all, causes are written down up to MAX_INCIDENTS (about 20 kB each at most), and
+# what is beyond that is counted. The sum stays below 16 MB.
+MAX_KEPT = 8 * 1024 * 1024
+MAX_INCIDENTS = 300
 
 _run = subprocess.run  # every program started here goes through it, so that tests can stand in for it
 
@@ -81,6 +87,8 @@ class IncidentLog:
         self._lock = threading.Lock()
         self._by_cause: dict[tuple[str, str, str], Incident] = {}
         self._versions: dict[str, str | None] = {}
+        self._kept = 0  # bytes of inputs kept so far
+        self.not_itemised = 0  # occurrences of causes beyond MAX_INCIDENTS
 
     def record(self, *, spec: str, version: str | None, sha256: str, target: Target, file: Path, verdict: Verdict,
                confirmed: bool) -> None:
@@ -97,13 +105,18 @@ class IncidentLog:
             key = (spec, target.name, cause)
             incident = self._by_cause.get(key)
             if incident is None:
+                if len(self._by_cause) >= MAX_INCIDENTS:
+                    self.not_itemised += 1
+                    return
                 incident = self._by_cause[key] = Incident(
                     cause, verdict.incident, spec, version, sha256, target.name, self._versions[target.name],
                     verdict.returncode, verdict.argv, verdict.stderr)
             incident.occurrences += 1
             incident.confirmed += bool(confirmed)
             if len(incident.inputs) < KEEP_PER_CAUSE and digest not in {d for _, d, _ in incident.inputs}:
-                incident.inputs.append((data if len(data) <= MAX_INPUT else None, digest, len(data)))
+                keep = len(data) <= MAX_INPUT and self._kept + len(data) <= MAX_KEPT
+                self._kept += len(data) if keep else 0
+                incident.inputs.append((data if keep else None, digest, len(data)))
 
     @property
     def incidents(self) -> list[Incident]:
@@ -157,7 +170,7 @@ def members(log: IncidentLog, meta: dict) -> list[tuple[str, bytes]]:
     """Everything in the record, as (path, content)."""
     found = log.incidents
     manifest = {
-        "schema": 1, **meta,
+        "schema": 1, **meta, "not_itemised": log.not_itemised,
         "incidents": [
             {"id": i.id, "signature": i.signature, "kind": i.kind, "spec": i.spec, "spec_version": i.spec_version,
              "spec_sha256": i.spec_sha256, "target": i.target, "target_version": i.target_version,
@@ -172,6 +185,9 @@ def members(log: IncidentLog, meta: dict) -> list[tuple[str, bytes]]:
     index = ["# Fanbase evaluation: private record", "",
              f"{len(found)} incident(s), made {meta['created']}.", ""]
     index += [f"- `{i.id}`: {i.kind} of {i.target} on {i.spec} ({i.occurrences}x)" for i in found] or ["Nothing broke."]
+    if log.not_itemised:
+        index += ["", f"{log.not_itemised} further occurrence(s) of other causes happened after {MAX_INCIDENTS} had been written down; "
+                      "run it again on your machine with --incidents to see them."]
     out.append(("REPORT.md", "\n".join(index).encode() + b"\n"))
     for i in found:
         out.append((f"{i.id}/REPORT.md", _report(i, meta).encode()))
