@@ -78,9 +78,9 @@ def open_bundle(capsys, bundle, key, *more):
 RECORD = {
     "manifest.json": json.dumps({"incidents": [{"id": "x"}, {"id": "y"}]}).encode(),
     "REPORT.md": b"# the record\n",
-    "crasher-crash-1a2b3c4d/REPORT.md": b"# crash\n",
-    "crasher-crash-1a2b3c4d/stderr.txt": b"it said this",
-    "crasher-crash-1a2b3c4d/input-1.bin": b"\x00\x01\x02",
+    "png_png__crasher-crash-1a2b3c4d5e6f/REPORT.md": b"# crash\n",
+    "png_png__crasher-crash-1a2b3c4d5e6f/stderr.txt": b"it said this",
+    "png_png__crasher-crash-1a2b3c4d5e6f/input-1.bin": b"\x00\x01\x02",
 }
 
 
@@ -92,7 +92,7 @@ def test_a_record_opens_into_a_folder_only_you_can_read(capsys, age, key, tmp_pa
     code, out, _ = open_bundle(capsys, bundle, key, "--into", str(tmp_path / "opened"))
     assert code == 0 and "5 file(s), 2 incident(s)" in out
     folder = tmp_path / "opened"
-    assert (folder / "crasher-crash-1a2b3c4d" / "input-1.bin").read_bytes() == b"\x00\x01\x02"
+    assert (folder / "png_png__crasher-crash-1a2b3c4d5e6f" / "input-1.bin").read_bytes() == b"\x00\x01\x02"
     assert (folder / "REPORT.md").read_bytes() == b"# the record\n"
     modes = {p: p.stat().st_mode & 0o777 for p in [folder, *folder.rglob("*")]}
     assert all(mode == (0o700 if p.is_dir() else 0o600) for p, mode in modes.items())

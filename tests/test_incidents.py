@@ -104,6 +104,36 @@ def test_a_crash_is_written_down_with_everything_needed_to_report_it(capsys, cra
     assert "4 time(s)" in report
 
 
+@pytest.fixture
+def two_specs(tmp_path):
+    root = build_registry(tmp_path / "reg2", {("png", "png"): dict(version="1.0"), ("png", "png-apng"): dict(version="1.0")})
+    target(root, "crasher", CRASH)
+    (root / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["crasher"]}))
+    settle(root)
+    return root
+
+
+@posix
+def test_the_same_cause_in_two_specs_is_two_entries_that_do_not_collide(capsys, two_specs, fandango, tmp_path):
+    code, _, _ = run(capsys, "--registry", str(two_specs), "evaluate", "png", "png-apng", "-n", "4", "--incidents", str(tmp_path / "private"))
+    assert code == 0
+    folder, = (tmp_path / "private").glob("incidents-*")
+    found = json.loads((folder / "manifest.json").read_text())["incidents"]
+    assert sorted(i["spec"] for i in found) == ["png/png", "png/png-apng"]
+    assert len({i["id"] for i in found}) == 2 and found[0]["signature"] == found[1]["signature"]  # one cause, in two specs
+    for i in found:
+        assert (folder / i["id"] / "REPORT.md").is_file() and (folder / i["id"] / "stderr.txt").is_file()
+        assert i["spec"].replace("/", "_") in i["id"]
+
+
+@posix
+def test_and_the_encrypted_record_names_nothing_twice(capsys, two_specs, fandango, age, recipients, tmp_path):
+    run(capsys, "--registry", str(two_specs), "evaluate", "png", "png-apng", "-n", "4", "--incidents", str(tmp_path / "p"),
+        "--incident-recipients", str(recipients))
+    names = tar_of(age.plaintexts[-1]).getnames()
+    assert len(names) == len(set(names)) and sum(n.endswith("/REPORT.md") for n in names) == 2
+
+
 @posix
 def test_the_record_is_for_your_eyes_only(capsys, crashing, fandango, tmp_path):
     evaluate(capsys, crashing, "-n", "4", "--incidents", str(tmp_path / "private"))

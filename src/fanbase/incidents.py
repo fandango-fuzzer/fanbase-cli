@@ -77,7 +77,8 @@ class Incident:
 
     @property
     def id(self) -> str:
-        return f"{self.target}-{self.kind}-{self.signature[:8]}"
+        # (a plain name that no other incident has: the same cause in two specs is two entries)
+        return f"{self.spec.replace('/', '_')}__{self.target}-{self.kind}-{self.signature[:12]}"
 
 
 class IncidentLog:
