@@ -32,6 +32,7 @@ from fanbase.manager import (
 )
 from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean
+from fanbase.bases import save_base, sha256
 from fanbase.registry import (
     DEFAULT_REGISTRY_NAME,
     Entry,
@@ -179,6 +180,7 @@ def _requalified(items: list, source: RegistryBase, target_id: str) -> list:
     return out
 
 
+_CONFLICT = re.compile(r"^<<<<<<< .*\n(?:.*\n)*?>>>>>>> ", re.MULTILINE)
 _INCLUDE = re.compile(r"""include\(\s*(["'])(.+?)\1\s*\)""")
 
 
@@ -218,17 +220,20 @@ def cmd_fork(args, ctx: Context) -> int:
     if entry.meta.get("extends"):
         meta["extends"] = _requalified(list(entry.meta["extends"]), source, owner)
     meta.update(derived_from=f"{where}@{version}" if version is not None else where, version="0.1", status="draft")
+    raw = source.read(entry)
+    meta["derived_sha256"] = sha256(raw)
 
     folder.mkdir(parents=True)
     try:
-        text = source.read(entry).decode("utf-8")
+        text = raw.decode("utf-8", errors="replace")
+        save_base(raw)  # the common ancestor of a later `fanbase rebase`
         for path in foreign_includes(text, source, owner):
             print(
                 f'warning: it includes "{clean(path)}", a file of the registry {identity(source)}, which '
                 f"{owner or 'the public registry'} does not have; fork what it includes first, or change the include",
                 file=sys.stderr,
             )
-        (folder / f"{kind}.fan").write_text(text, encoding="utf-8")
+        (folder / f"{kind}.fan").write_bytes(raw)  # the bytes as they are: their hash is what rebase merges from
         (folder / "metadata.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
         refresh(target)
     except BaseException:
@@ -421,20 +426,26 @@ def run_checks(reg: Registry, refs: list[str], *, count: int = 3, timeout: int =
         wanted = [reg.resolve(ref) for ref in refs]
         selected = [e for e in selected if e in wanted]
 
-    # 2. what a reader needs to know about a spec
+    # 2. a merge left unfinished
+    for entry in selected:
+        text = (reg.root / entry.path).read_text(encoding="utf-8", errors="replace")
+        if _CONFLICT.search(text):
+            report.failures.append(f"{entry}: an unresolved merge conflict (a line starting with <<<<<<<); `fanbase rebase` left it")
+
+    # 3. what a reader needs to know about a spec
     for entry in selected:
         missing = [key for key in ("description", "authors", "license") if not entry.meta.get(key)]
         if missing:
             report.warnings.append(f"{entry}: no {', no '.join(missing)}")
         report.checked += 1
 
-    # 3. a changed spec has a new version
+    # 4. a changed spec has a new version
     if base:
         for change in compare_registries(open_base(base), reg):
             if change.unbumped and (not refs or change.spec in {str(e) for e in selected}):
                 report.failures.append(f"{change.spec}: changed since {base} but still at version {change.new}")
 
-    # 4. every spec produces inputs
+    # 5. every spec produces inputs
     fandango = find_fandango() if generate_inputs else None
     if generate_inputs and fandango is None:
         report.skipped_generation = "fandango is not installed, so no inputs were produced (pip install fandango-fuzzer)"

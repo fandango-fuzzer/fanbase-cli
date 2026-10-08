@@ -51,9 +51,10 @@ KEY_ORDER = ("format", "kind", "description", "fanbase", "fandango", "requires")
 #   source        what it was made from: a URL, or a few words
 #   extends       specs it builds on, as refs (`png`, `png/png-apng`)
 #   derived_from  the spec it was forked from, as a ref
+#   derived_sha256  the hash of that spec's file when it was forked: what `rebase` merges from
 #   status        draft, stable or deprecated
 #   doi           the DOI of an archived copy (Zenodo)
-OPTIONAL_KEYS = ("authors", "license", "source", "extends", "derived_from", "status", "doi")
+OPTIONAL_KEYS = ("authors", "license", "source", "extends", "derived_from", "derived_sha256", "status", "doi")
 STATUSES = ("draft", "stable", "deprecated")
 
 _ORCID = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
@@ -107,6 +108,10 @@ def check_metadata(meta: dict) -> list[str]:
     for key in ("license", "source", "derived_from"):
         if key in meta and not _is_text(meta[key]):
             problems.append(f"{key}: expected text")
+    if "derived_sha256" in meta and not (
+        isinstance(meta["derived_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", meta["derived_sha256"])
+    ):
+        problems.append("derived_sha256: expected the 64 hex digits of a SHA-256")
     if "status" in meta and meta["status"] not in STATUSES:
         problems.append(f"status: {meta['status']!r} is not one of {', '.join(STATUSES)}")
     if "doi" in meta and not (isinstance(meta["doi"], str) and _DOI.fullmatch(meta["doi"])):

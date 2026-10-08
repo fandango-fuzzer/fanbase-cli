@@ -116,3 +116,9 @@ def pip_calls(monkeypatch):
 def own_config(tmp_path_factory, monkeypatch):
     """No test reads or writes the config file of whoever runs the tests."""
     monkeypatch.setenv("FANBASE_CONFIG", str(tmp_path_factory.mktemp("config") / "config.yml"))
+
+
+@pytest.fixture(autouse=True)
+def own_cache(tmp_path_factory, monkeypatch):
+    """No test reads or fills the cache of whoever runs the tests."""
+    monkeypatch.setenv("FANBASE_CACHE", str(tmp_path_factory.mktemp("cache")))

@@ -37,6 +37,7 @@ from fanbase.locking import build_lock, check_locked, compare, locked_registry
 from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
 from fanbase.output import clean, dump_json
 from fanbase.publish import cmd_publish
+from fanbase.rebase import cmd_rebase
 from fanbase.registry import Registry, RegistryBase, RegistryError, split_registry
 from fanbase.remote import RemoteRegistry
 from fanbase.source import locate_registry, moves
@@ -598,6 +599,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--as", dest="name", required=True, metavar="NAME", help="what to call the copy, e.g. png-fancy")
     p.add_argument("--into", metavar="DIR", help="the registry checkout to put it in (default: the one you are in)")
     p.set_defaults(fn=cmd_fork)
+
+    p = sub.add_parser("rebase", help="bring a fork up to date with the spec it was forked from")
+    p.add_argument("ref", help="the fork, e.g. png-mine")
+    p.add_argument("--upstream", metavar="REGISTRY", help="read the original from here (a URL, or the path of a checkout), instead of where derived_from says")
+    p.add_argument("--base-registry", metavar="REGISTRY", help="a release of the registry from the time of the fork, if it can no longer be found otherwise")
+    p.add_argument("--dry-run", action="store_true", help="say whether it merges cleanly, and write nothing")
+    p.set_defaults(fn=cmd_rebase, local=True)
 
     p = sub.add_parser("check", help="is the checkout in order, and does each spec produce inputs?")
     p.add_argument("refs", nargs="*", metavar="ref", help="the specs to check (default: all)")

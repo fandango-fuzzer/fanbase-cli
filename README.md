@@ -223,6 +223,14 @@ fanbase publish                  # branch, commit, push, and a pull request (nee
 - `fork` copies a spec of any registry (`acme:png-strict` too) into the checkout under a new name. It
   records `derived_from: fanbase:png/png-apng@1.0` and keeps the original authors, adding you. Use
   `--into DIR` to put it in another checkout, such as your own registry.
+- `rebase SPEC` brings a fork up to date with the spec it was forked from. It merges what changed in the
+  original since you forked it into your version, with `git merge-file`, so a conflict looks like git's: fix it,
+  and `check` refuses the spec until you do. It needs the original as it was when you forked, the common ancestor,
+  which it finds, checking its hash against the `derived_sha256` that `fork` recorded, in the copy `fork` kept
+  (in `$FANBASE_CACHE`, else `~/.cache/fanbase`), in the git history of your clone, or in an older release of the
+  registry that you name with `--base-registry`. `--dry-run` says whether it merges cleanly and writes nothing.
+  It does not touch your `metadata.yml` beyond `derived_from` and `derived_sha256`, but says if the original's
+  `extends`, Fandango range or file types now differ from yours. Give the fork a new `version` afterwards.
 - `check [SPEC...]` verifies that `metadata.yml` and `index.yml` are up to date, that what specs extend
   exists, and that each spec makes Fandango produce inputs (it needs `fandango` installed; `--count N`,
   `--timeout S`, `--no-generate`). The Python packages a spec imports are installed first, as `fandango -F`
