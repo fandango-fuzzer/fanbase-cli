@@ -254,3 +254,48 @@ def test_sizes_and_numbers_do_not_make_reasons_differ(tmp_path):
     assert reason("Picture size 58810x7219 is invalid") == reason("Picture size 36x33424 is invalid") == "Picture size NxN is invalid"
     assert reason("bad marker 0xe9 at offset 123456") == "bad marker 0xN at offset N"
     assert reason("SOF0 not supported") == "SOF0 not supported"  # a short number stays: it can be what the reason is
+
+
+def test_a_target_is_found_from_a_relative_registry_path(tmp_path, monkeypatch):
+    # Targets are run from another folder; a path relative to the registry would lead nowhere there.
+    make(tmp_path, "rel", ACCEPT)
+    monkeypatch.chdir(tmp_path)
+    target = load_target(__import__("pathlib").Path("."), "rel")
+    assert target.directory.is_absolute()
+    work = tmp_path / "elsewhere"
+    work.mkdir()
+    assert judge(target, sample(tmp_path), cwd=work).category == ACCEPTED
+
+
+def test_a_command_that_names_a_file_the_target_does_not_have(tmp_path):
+    with pytest.raises(TargetError, match="run names harness.py, which is not in the target's folder"):
+        make(tmp_path, "empty")  # no harness.py written
+    with pytest.raises(TargetError, match="version names nothing.py, which is not in the target's folder"):
+        make(tmp_path, "noversion", ACCEPT, version=["{python}", "{dir}/nothing.py"])
+    with pytest.raises(TargetError, match=r"leaves the target's folder"):
+        make(tmp_path, "up", ACCEPT, run=["{python}", "{dir}/../other/harness.py", "{file}"])
+
+
+@posix
+def test_a_public_report_does_not_say_which_files_hang_either(tmp_path):
+    target = make(tmp_path, "sleeper", "import time\ntime.sleep(60)\n")
+    files = [sample(tmp_path, b"x", f"f{i}.bin") for i in range(2)]
+    shown = run_target(target, files, timeout=1)
+    assert shown.counts[TIMEOUT] == 2 and shown.top_reasons() == [("timeout: no answer in 1 seconds", 2)]
+    hidden = run_target(target, files, timeout=1, hide_crashes=True)
+    assert hidden.counts[TIMEOUT] == 0 and hidden.counts[ERROR] == 2 and hidden.top_reasons() == []
+
+
+def test_a_target_that_is_slow_on_a_spec_runs_out_of_its_time_not_everyone_elses(tmp_path):
+    target = make(tmp_path, "slow", "import time\ntime.sleep(0.3)\n")
+    files = [sample(tmp_path, b"x", f"f{i}.bin") for i in range(12)]
+    result = run_target(target, files, jobs=1, budget=1.0)
+    assert 0 < result.total < 12 and result.skipped == 12 - result.total  # every file is either judged or skipped
+    assert result.accepted == result.total and result.seconds < 3
+
+
+def test_with_enough_time_nothing_is_skipped(tmp_path):
+    target = make(tmp_path, "quick", ACCEPT)
+    files = [sample(tmp_path, b"x", f"f{i}.bin") for i in range(6)]
+    result = run_target(target, files, budget=60)
+    assert (result.total, result.skipped) == (6, 0)

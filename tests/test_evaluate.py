@@ -40,26 +40,37 @@ def run(capsys, *argv):
 
 
 class FakeFandango:
-    """Stands in for `fandango fuzz`: makes the inputs it is told to, where it is told to."""
+    """Stands in for `fandango fuzz`: makes the inputs it is told to, where it is told to.
 
-    def __init__(self, content=None, limit=None, returncode=0, make=True):
+    The inputs are a running sequence, different from each other, whatever the number of runs.
+    """
+
+    def __init__(self, content=None, limit=None, returncode=0, make=True, delay=0.0, overrun_on=None):
         # by default every fourth input is bad
-        self.content = content or (lambda i: b"bad input" if i % 4 == 0 else b"good input")
-        self.limit, self.returncode, self.make = limit, returncode, make
+        self.content = content or (lambda i: (b"bad input " if i % 4 == 0 else b"good input ") + str(i).encode())
+        self.limit, self.returncode, self.make, self.delay, self.overrun_on = limit, returncode, make, delay, overrun_on
         self.calls = []
+        self.made = 0
 
     def __call__(self, cmd, **kwargs):
         if cmd[0] != "/fake/fandango":
             return REAL_RUN(cmd, **kwargs)
         import pathlib
+        import time
 
         n = int(cmd[cmd.index("-n") + 1])
         out = pathlib.Path(cmd[cmd.index("-d") + 1])
-        self.calls.append({"cmd": cmd, "env": kwargs["env"]})
+        self.calls.append({"cmd": cmd, "env": kwargs["env"], "n": n, "timeout": kwargs.get("timeout")})
+        if self.overrun_on is not None and len(self.calls) - 1 == self.overrun_on:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
         if self.make:
-            out.mkdir(parents=True)
-            for i in range(min(n, self.limit or n)):
-                (out / f"fandango-{i:04d}.bin").write_bytes(self.content(i))
+            room = n if self.limit is None else max(0, min(n, self.limit - self.made))
+            if room or self.limit is None:
+                out.mkdir(parents=True)
+            for _ in range(room):
+                time.sleep(self.delay)
+                (out / f"fandango-{self.made:04d}.bin").write_bytes(self.content(self.made))
+                self.made += 1
         return subprocess.CompletedProcess(cmd, self.returncode, "", "could not find enough" if self.returncode else "")
 
 
@@ -178,7 +189,7 @@ def test_the_bands(share, band_):
 
 def test_what_the_best_target_says_is_what_counts(capsys, reg, fake, monkeypatch):
     # picky also rejects "odd" inputs, so it accepts fewer than strict; strict decides
-    monkeypatch.setattr(contrib, "_run", FakeFandango(content=lambda i: [b"good", b"bad", b"odd", b"good"][i % 4]))
+    monkeypatch.setattr(contrib, "_run", FakeFandango(content=lambda i: [b"good ", b"bad ", b"odd ", b"good "][i % 4] + str(i).encode()))
     _, out, _ = evaluate(capsys, reg, "png", "-n", "20")
     rows = {line.split()[0]: line.split() for line in out.splitlines() if line.startswith(("  strict", "  picky"))}
     assert rows["strict"][1] == "15/20" and rows["picky"][1] == "10/20"
@@ -189,7 +200,7 @@ def test_what_the_best_target_says_is_what_counts(capsys, reg, fake, monkeypatch
 def test_what_a_target_calls_unsupported_is_counted_so(capsys, reg, monkeypatch):
     monkeypatch.setattr(contrib, "find_fandango", lambda: "/fake/fandango")
     monkeypatch.setattr("fanbase.evaluate.find_fandango", lambda: "/fake/fandango")
-    monkeypatch.setattr(contrib, "_run", FakeFandango(content=lambda i: [b"good", b"bad", b"odd", b"good"][i % 4]))
+    monkeypatch.setattr(contrib, "_run", FakeFandango(content=lambda i: [b"good ", b"bad ", b"odd ", b"good "][i % 4] + str(i).encode()))
     target(reg, "picky", PICKY, classify=[{"match": "unsupported", "as": "unsupported"}])
     settle(reg)
     _, out, _ = evaluate(capsys, reg, "png", "-n", "20", "--targets", "picky", "--json")
@@ -399,3 +410,79 @@ def test_with_the_real_fandango(capsys, tmp_path, monkeypatch):
     assert spec["expectation_met"] is False  # it says mostly, but everything is accepted: always
     again = json.loads(run(capsys, "--registry", str(root), "evaluate", "txt", "-n", "5", "--json")[1])
     assert [t["accepted"] for t in again["specs"][0]["targets"]] == [5]
+
+
+# --- a time budget for Fandango
+
+def fandango_for(monkeypatch, fandango):
+    monkeypatch.setattr(contrib, "find_fandango", lambda: "/fake/fandango")
+    monkeypatch.setattr("fanbase.evaluate.find_fandango", lambda: "/fake/fandango")
+    monkeypatch.setattr(contrib, "_run", fandango)
+    return fandango
+
+
+def test_a_fast_spec_takes_two_runs(capsys, reg, monkeypatch):
+    fandango = fandango_for(monkeypatch, FakeFandango())
+    code, out, _ = evaluate(capsys, reg, "png", "-n", "100", "--json")
+    spec = json.loads(out)["specs"][0]
+    assert code == 0 and spec["generated"]["produced"] == 100 and spec["generated"]["note"] is None
+    assert [c["n"] for c in fandango.calls] == [5, 95]  # a first batch to see how fast, then all that is left
+
+
+def test_each_run_has_its_own_seed(capsys, reg, monkeypatch):
+    fandango = fandango_for(monkeypatch, FakeFandango())
+    evaluate(capsys, reg, "png", "-n", "40", "--seed", "7")
+    assert [c["cmd"][-2:] for c in fandango.calls] == [["--random-seed", "7"], ["--random-seed", "8"]]
+    assert [c["env"]["PYTHONHASHSEED"] for c in fandango.calls] == ["7", "8"]
+
+
+def test_a_slow_spec_is_stopped_by_its_budget_and_what_it_made_is_used(capsys, reg, monkeypatch):
+    fandango_for(monkeypatch, FakeFandango(delay=0.05))
+    code, out, _ = evaluate(capsys, reg, "png", "-n", "1000", "--budget", "0.6", "--json")
+    spec = json.loads(out)["specs"][0]
+    produced = spec["generated"]["produced"]
+    assert code == 0 and 0 < produced < 1000
+    assert spec["generated"]["note"].startswith("the budget of 0.6s ran out with ")
+    assert spec["targets"][0]["total"] == produced  # and those are the ones that were judged
+
+
+def test_a_batch_that_overruns_loses_only_itself(capsys, reg, monkeypatch):
+    fandango_for(monkeypatch, FakeFandango(overrun_on=1))
+    code, out, _ = evaluate(capsys, reg, "png", "-n", "100", "--json")
+    spec = json.loads(out)["specs"][0]
+    assert code == 0 and spec["generated"]["produced"] == 5 and "ran out with 5 of the 100 inputs" in spec["generated"]["note"]
+
+
+def test_a_spec_with_few_different_inputs_stops_when_there_are_no_new_ones(capsys, reg, monkeypatch):
+    fandango = fandango_for(monkeypatch, FakeFandango(limit=5, returncode=1))
+    code, out, _ = evaluate(capsys, reg, "png", "-n", "100", "--json")
+    spec = json.loads(out)["specs"][0]
+    assert code == 0 and spec["generated"]["produced"] == 5
+    assert spec["generated"]["note"].startswith("Fandango found 5 of the 100 inputs asked for")
+    assert len(fandango.calls) == 3  # one that made them, and two that had nothing new
+
+
+def test_the_inputs_of_all_the_runs_are_kept_together(capsys, reg, monkeypatch, tmp_path):
+    fandango_for(monkeypatch, FakeFandango())
+    evaluate(capsys, reg, "png", "-n", "30", "--keep", str(tmp_path / "kept"))
+    assert sorted(p.name for p in (tmp_path / "kept/png/png").iterdir()) == [f"fandango-{i:04d}.bin" for i in range(30)]
+
+
+def test_without_a_budget_it_is_one_run(capsys, reg, monkeypatch):
+    fandango = fandango_for(monkeypatch, FakeFandango())
+    code, out, _ = evaluate(capsys, reg, "png", "-n", "100", "--budget", "0", "--json")
+    assert code == 0 and json.loads(out)["specs"][0]["generated"]["produced"] == 100
+    assert [c["n"] for c in fandango.calls] == [100]
+
+
+def test_a_target_that_runs_out_of_time_is_said_so(capsys, reg, fake):
+    target(reg, "slow", "import time\ntime.sleep(0.25)\n")
+    (reg / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["slow"]}))
+    settle(reg)
+    code, out, _ = evaluate(capsys, reg, "png", "-n", "20", "-j", "1", "--judge-budget", "0.8", "--json")
+    slow = json.loads(out)["specs"][0]["targets"][0]
+    assert code == 0 and 0 < slow["total"] < 20 and slow["skipped"] == 20 - slow["total"]
+    _, text, _ = evaluate(capsys, reg, "png", "-n", "20", "-j", "1", "--judge-budget", "0.8")
+    assert "slow: out of time after " in text and " of 20 files" in text
+    _, md, _ = evaluate(capsys, reg, "png", "-n", "20", "-j", "1", "--judge-budget", "0.8", "--markdown")
+    assert "_slow: out of time after " in md

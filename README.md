@@ -276,6 +276,11 @@ png/png-apng  version 1.0: 100 inputs from seed 1 in 3.7s (27.0/s)
   (`--strict` makes a mismatch a failure). One parser's word is not the format's: a parser may lack a feature, so
   the best target decides, and a format should have several.
 - **Same each time.** `--seed` (default 1) is given to Fandango, and to Python's hash seed, so the inputs are the same.
+- **Time.** Some specs take seconds for a hundred inputs, some minutes. Fandango gets `--budget` seconds per spec
+  (default 60): it is asked for a few inputs first, to see how fast they come, then for as many as fit in the time
+  left, and what it made by then is used (the report says how many). A target gets `--judge-budget` seconds per spec
+  (default 60) and `--timeout` per file (default 10); a target that waits out its timeout on file after file does
+  not hold up the rest, and the report says how many files it was asked about.
 
 **Targets** are the parsers and tools files are judged by. A format names them in its `format.yml`
 (`targets: [pillow, imagemagick]`), or a spec does in its own `metadata.yml`; each is a folder `targets/<name>/`
@@ -299,11 +304,11 @@ A target is a command that a registry tells fanbase to run, so it is as much cod
 checkout you have read, and in CI on a machine that is thrown away. Each file is judged by a process of its own,
 with a timeout (`--timeout`), a memory and CPU limit (`--memory`, enforced on Linux), and core dumps switched off.
 
-**Crashes are not for a public log.** A parser that crashes on a generated file may have a bug that is not fixed
-yet, and the registry's [ethics considerations](https://github.com/fandango-fuzzer/fanbase/blob/main/ETHICS.md)
-are that concrete inputs and unfixed vulnerabilities are not published. A crash is counted and named in what you
-run locally. With `--hide-crashes`, which CI uses for anything public, it is counted as a plain error and nothing
-about it is kept, and no input is ever saved unless you ask with `--keep DIR` (which does not go with it).
+**Crashes and hangs are not for a public log.** A parser that crashes, or hangs, on a generated file may have a bug
+that is not fixed yet, and the registry's [ethics considerations](https://github.com/fandango-fuzzer/fanbase/blob/main/ETHICS.md)
+are that concrete inputs and unfixed vulnerabilities are not published. A crash or a hang is counted and named in
+what you run locally. With `--hide-crashes`, which CI uses for anything public, it is counted as a plain error and
+nothing about it is kept, and no input is ever saved unless you ask with `--keep DIR` (which does not go with it).
 
 ## Registries besides the public one
 

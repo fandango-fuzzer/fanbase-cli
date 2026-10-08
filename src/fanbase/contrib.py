@@ -380,41 +380,101 @@ class Produced:
     error: str | None = None  # why there is nothing to use: it timed out, made nothing, or could not start
     returncode: int | None = None
     tail: str = ""  # the last of what it said, when it did not exit cleanly
+    stopped: str = ""  # why there are fewer than were asked for, when the time ran out first
 
     def cleanup(self) -> None:
         shutil.rmtree(self.directory, ignore_errors=True)
 
 
+FIRST_BATCH = 5  # inputs asked for first, within a budget: few, so that a slow spec shows how slow before it costs the budget
+GRACE = 10  # seconds a batch that began in time may overrun the budget
+
+
+def _fuzz(fandango: str, spec: Path, n: int, out: Path, library: Path, seed: int | None, timeout: float):
+    """One run of `fandango fuzz`; None if it did not finish in time."""
+    cmd = [fandango, "fuzz", "-f", str(spec), "-n", str(n), "-d", str(out)]
+    env = {**os.environ, "FANDANGO_PATH": str(library)}
+    if seed is not None:
+        cmd += ["--random-seed", str(seed)]
+        env["PYTHONHASHSEED"] = str(seed)  # Fandango asks for it, for the same inputs each time
+    try:
+        return _run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def produce(reg: Registry, entry: Entry, ctx: Context, *, count: int, timeout: int, fandango: str,
-            install_them: bool = True, say=print, seed: int | None = None) -> Produced:
+            install_them: bool = True, say=print, seed: int | None = None, budget: float | None = None) -> Produced:
     """Make Fandango produce inputs from a spec, with what it extends installed where its
     include() looks, and the Python packages they import installed too. With a seed the
-    same inputs come out each time. The caller removes `directory` when done with the inputs."""
+    same inputs come out each time. The caller removes `directory` when done with the inputs.
+
+    Some specs take seconds for a hundred inputs and some minutes. With a `budget` (seconds), Fandango
+    is asked for a first batch, and then, from how fast it went, for as many as fit in the time left,
+    until there are `count` different inputs or the time is up; whatever it made by then is used.
+    Without one it is a single run, which has `timeout` seconds."""
     tmp = Path(tempfile.mkdtemp(prefix="fanbase-check-"))
     library, out = tmp / "library", tmp / "out"
     installed = [install(dep_reg, dep, library) for dep_reg, dep in closure(ctx, reg, entry)]
     if why := _requirements(installed, str(entry), install_them, say):
         return Produced([], 0.0, tmp, error=why)
-    env = {**os.environ, "FANDANGO_PATH": str(library)}
-    cmd = [fandango, "fuzz", "-f", str(spec_path(library, entry.format, entry.kind, reg.name)),
-           "-n", str(count), "-d", str(out)]
-    if seed is not None:
-        cmd += ["--random-seed", str(seed)]
-        env["PYTHONHASHSEED"] = str(seed)  # Fandango asks for it, for the same inputs each time
-    started = time.monotonic()
-    try:
-        done = _run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return Produced([], time.monotonic() - started, tmp, error=f"fandango did not finish in {timeout} seconds")
-    seconds = time.monotonic() - started
-    files = sorted(p for p in out.glob("*") if p.is_file()) if out.is_dir() else []
-    tail = " | ".join((done.stderr or done.stdout).strip().splitlines()[-2:])
-    produced = Produced(files, seconds, tmp, returncode=done.returncode, tail=tail)
-    if not files:
-        produced.error = "fandango produced no files"
-    elif not any(p.stat().st_size > 0 for p in files):
+    spec = spec_path(library, entry.format, entry.kind, reg.name)
+
+    if budget is None:
+        started = time.monotonic()
+        done = _fuzz(fandango, spec, count, out, library, seed, timeout)
+        if done is None:
+            return Produced([], time.monotonic() - started, tmp, error=f"fandango did not finish in {timeout} seconds")
+        files = sorted(p for p in out.glob("*") if p.is_file()) if out.is_dir() else []
+        produced = Produced(files, time.monotonic() - started, tmp, returncode=done.returncode,
+                            tail=" | ".join((done.stderr or done.stdout).strip().splitlines()[-2:]))
+    else:
+        produced = _produce_within(fandango, spec, count, out, library, seed, budget, tmp)
+
+    if not produced.files:
+        produced.error = produced.error or "fandango produced no files"
+    elif not any(p.stat().st_size > 0 for p in produced.files):
         produced.error = "fandango produced only empty files"
     return produced
+
+
+def _produce_within(fandango: str, spec: Path, count: int, out: Path, library: Path, seed: int | None,
+                    budget: float, tmp: Path) -> Produced:
+    import hashlib
+
+    started = time.monotonic()
+    files: list[Path] = []
+    seen: set[str] = set()
+    batch, wanted, empty = 0, min(count, FIRST_BATCH), 0
+    returncode, tail, stopped = None, "", ""
+    while len(files) < count:
+        left = budget - (time.monotonic() - started)
+        if left <= 0:
+            stopped = f"the budget of {budget:g}s ran out with {len(files)} of the {count} inputs"
+            break
+        folder = out / f"batch-{batch}"
+        done = _fuzz(fandango, spec, wanted, folder, library, None if seed is None else seed + batch, left + GRACE)
+        if done is None:
+            stopped = f"the budget of {budget:g}s ran out with {len(files)} of the {count} inputs"
+            break
+        returncode, tail = done.returncode, " | ".join((done.stderr or done.stdout).strip().splitlines()[-2:])
+        fresh = 0
+        for made in sorted(p for p in folder.glob("*") if p.is_file()) if folder.is_dir() else []:
+            digest = hashlib.sha256(made.read_bytes()).hexdigest()
+            if digest in seen or len(files) >= count:
+                continue
+            seen.add(digest)
+            kept = out / f"fandango-{len(files):04d}{made.suffix}"
+            shutil.move(made, kept)
+            files.append(kept)
+            fresh += 1
+        empty = 0 if fresh else empty + 1
+        if empty >= 2:  # nothing new twice running: it has no more different inputs to give
+            break
+        rate = len(files) / max(time.monotonic() - started, 1e-6)
+        wanted = max(1, min(count - len(files), int(rate * (budget - (time.monotonic() - started)) * 0.8)))
+        batch += 1
+    return Produced(files, time.monotonic() - started, tmp, returncode=returncode, tail=tail, stopped=stopped)
 
 
 def generate(reg: Registry, entry: Entry, ctx: Context, count: int, timeout: int, fandango: str,

@@ -108,11 +108,23 @@ def _command_line(value: object, where: str, what: str, needs_file: bool) -> tup
     return tuple(argv)
 
 
+def _check_files(argv: tuple[str, ...], folder: Path, where: str, what: str) -> None:
+    """What a command line names in the target's own folder has to be there."""
+    for part in argv:
+        if part.startswith("{dir}/"):
+            relative = part[len("{dir}/"):]
+            if ".." in Path(relative).parts:
+                raise TargetError(f"{where}: {what} names {relative}, which leaves the target's folder")
+            if not (folder / relative).exists():
+                raise TargetError(f"{where}: {what} names {relative}, which is not in the target's folder")
+
+
 def load_target(root: Path, name: str) -> Target:
     """The target `name` of the registry at `root`; raises TargetError if it is not one."""
     if not is_safe_name(name):
         raise TargetError(f"{name!r} is not a target name")
-    folder = root / TARGETS_DIRNAME / name
+    # absolute: a target is run from another folder, where a relative path would lead nowhere
+    folder = (root / TARGETS_DIRNAME / name).resolve()
     path = folder / TARGET_FILENAME
     where = f"{TARGETS_DIRNAME}/{name}/{TARGET_FILENAME}"
     if not path.is_file():
@@ -132,6 +144,10 @@ def load_target(root: Path, name: str) -> Target:
         raise TargetError(f"{where}: formats has to be a list of format names")
     run = _command_line(data.get("run"), where, "run", needs_file=True)
     version = _command_line(data["version"], where, "version", needs_file=False) if "version" in data else None
+
+    _check_files(run, folder, where, "run")
+    if version:
+        _check_files(version, folder, where, "version")
 
     needs = data.get("needs") or {}
     if not isinstance(needs, dict):
@@ -220,7 +236,7 @@ def _reason(text: str, path: Path) -> str:
     return clean(_DIGITS.sub("N", line))[:100]
 
 
-def judge(target: Target, path: Path, *, timeout: int = 20, memory_mb: int = 2048, cwd: Path | None = None) -> Verdict:
+def judge(target: Target, path: Path, *, timeout: int = 10, memory_mb: int = 2048, cwd: Path | None = None) -> Verdict:
     """Ask the target about one file."""
     argv = _expand(target.run, target, path)
     if os.name == "posix":
@@ -258,6 +274,7 @@ class TargetResult:
     counts: Counter = field(default_factory=Counter)
     reasons: Counter = field(default_factory=Counter)
     seconds: float = 0.0
+    skipped: int = 0  # files not asked about, because the time for this target ran out first
 
     @property
     def accepted(self) -> int:
@@ -271,20 +288,35 @@ class TargetResult:
         return self.reasons.most_common(n)
 
 
-def run_target(target: Target, files: list[Path], *, jobs: int = 1, timeout: int = 20, memory_mb: int = 2048,
-               hide_crashes: bool = False, cwd: Path | None = None) -> TargetResult:
-    """Ask the target about each file. With `hide_crashes`, a crash is counted as an error and
-    nothing about it is kept: for reports that are public."""
+def run_target(target: Target, files: list[Path], *, jobs: int = 1, timeout: int = 10, memory_mb: int = 2048,
+               hide_crashes: bool = False, cwd: Path | None = None, budget: float | None = None) -> TargetResult:
+    """Ask the target about each file. With `hide_crashes`, a crash or a hang is counted as an
+    error and nothing about it is kept: for reports that are public. (A hang can be a
+    vulnerability that is not fixed yet, as a crash can.)
+
+    A target can be slow on a spec: it may wait out its timeout on file after file. With a `budget`
+    (seconds), once the time is up the files not yet asked about are skipped, and counted as such.
+    """
     import time
 
     result = TargetResult(target.name, version_of(target))
     started = time.monotonic()
+    deadline = None if budget is None else started + budget
+
+    def ask(file: Path) -> Verdict | None:
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        return judge(target, file, timeout=timeout, memory_mb=memory_mb, cwd=cwd)
+
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        verdicts = list(pool.map(lambda f: judge(target, f, timeout=timeout, memory_mb=memory_mb, cwd=cwd), files))
+        verdicts = list(pool.map(ask, files))
     result.seconds = time.monotonic() - started
     for verdict in verdicts:
+        if verdict is None:
+            result.skipped += 1
+            continue
         category, reason = verdict.category, verdict.reason
-        if hide_crashes and category == CRASH:
+        if hide_crashes and category in (CRASH, TIMEOUT):
             category, reason = ERROR, ""
         result.total += 1
         result.counts[category] += 1

@@ -150,14 +150,16 @@ def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str
                            if not report.targets else "none of the targets judges this format")
         return report
 
-    made = produce(reg, entry, ctx, count=args.count, timeout=args.generate_timeout, fandango=fandango,
-                   install_them=not args.no_requirements, say=say, seed=args.seed)
+    made = produce(reg, entry, ctx, count=args.count, timeout=1800, fandango=fandango,
+                   install_them=not args.no_requirements, say=say, seed=args.seed, budget=args.budget or None)
     try:
         report.produced, report.seconds = len(made.files), made.seconds
         if made.error:
             report.error = made.error
             return report
-        if len(made.files) < args.count:
+        if made.stopped:
+            report.note = made.stopped
+        elif len(made.files) < args.count:
             report.note = f"Fandango found {len(made.files)} of the {args.count} inputs asked for"
             if made.returncode:
                 report.note += f" ({made.tail})"
@@ -171,7 +173,7 @@ def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str
                 report.targets.append(TargetReport(target.name, target.title, "unavailable", why))
                 continue
             result = run_target(target, made.files, jobs=args.jobs, timeout=args.timeout, memory_mb=args.memory,
-                                hide_crashes=args.hide_crashes, cwd=scratch)
+                                hide_crashes=args.hide_crashes, cwd=scratch, budget=args.judge_budget or None)
             report.targets.append(TargetReport(target.name, target.title, "ok", version=result.version, result=result))
         return report
     finally:
@@ -204,6 +206,7 @@ def to_json(reports: list[SpecReport], args) -> dict:
                         "name": t.name, "title": t.title, "status": t.status, "note": t.note or None, "version": t.version,
                         **({
                             "total": t.result.total,
+                            "skipped": t.result.skipped,
                             "accepted": t.result.accepted,
                             "categories": {c: t.result.counts[c] for c in CATEGORIES},
                             "files_per_second": round(t.result.per_second, 1),
@@ -261,6 +264,8 @@ def as_text(reports: list[SpecReport], args) -> str:
                                          for i, (cell, w) in enumerate(zip(row, widths))).rstrip())
         for t in r.targets:
             if t.result:
+                if t.result.skipped:
+                    out.append(f"    {t.name}: out of time after {t.result.total} of {t.result.total + t.result.skipped} files")
                 for why, n in t.result.top_reasons(2):
                     out.append(clean(f"    {t.name}: {n}x {why}"))
         if expect := _expectation(r):
@@ -287,6 +292,9 @@ def as_markdown(reports: list[SpecReport], args) -> str:
                 "|---|--:|--:|--:|--:|--:|--:|--:|--:|---|"]
         for row in _rows(r):
             out.append("| " + " | ".join(row) + " |")
+        for t in r.targets:
+            if t.result and t.result.skipped:
+                out += ["", f"_{t.name}: out of time after {t.result.total} of {t.result.total + t.result.skipped} files._"]
         if expect := _expectation(r):
             out += ["", f"{'✅' if r.met else '⚠️'} {expect}"]
         out.append("")
