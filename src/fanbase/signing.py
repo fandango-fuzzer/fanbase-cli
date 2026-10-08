@@ -15,7 +15,8 @@ it was at a release, point at the release (`.../tree/<tag>`), which does not mov
 
 The keys to trust are the user's choice, never the registry's (a registry that said which keys to trust would be saying
 so in the very files that are in question): they are pinned with `fanbase registry add --signer`, and the public
-registry's are in `DEFAULT_SIGNERS`.
+registry's are in `DEFAULT_SIGNERS`, and apply to a release or a commit of it (`.../tree/<tag>`), never to `main`, the
+default, which moves with every merge while a signature does not.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ MAX_SIGNATURE = 16 * 1024
 _ARMOR = "-----BEGIN SSH SIGNATURE-----"
 
 # The public keys that sign the public registry's index, as `ssh-keygen -y` or a .pub file writes them. While there are none,
-# the public registry is not checked: a maintainer who signs puts the public key here, in the CLI, which is how it
+# the public registry is not checked (and when there are, only at a release or a commit, not at main): a maintainer who signs puts the public key here, in the CLI, which is how it
 # gets to the users (the key has to come from somewhere other than the registry it signs).
 DEFAULT_SIGNERS: tuple[str, ...] = ()
 

@@ -325,18 +325,37 @@ def test_verify_needs_keys(capsys, reg, key):
 
 # --- the public registry's keys
 
-def test_the_public_registry_is_checked_when_it_has_keys(monkeypatch, key):
-    assert source.signers_for("https://github.com/fandango-fuzzer/fanbase") == ()  # (none yet)
+def test_the_public_registry_is_checked_at_a_release_when_it_has_keys(monkeypatch, key):
+    official = "https://github.com/fandango-fuzzer/fanbase"
+    assert source.signers_for(f"{official}/tree/v2026.11.01") == ()  # (no keys yet: nothing is checked)
     monkeypatch.setattr(source, "DEFAULT_SIGNERS", (key[1],))
-    assert [k.text for k in source.signers_for("https://github.com/fandango-fuzzer/fanbase/tree/v1")] == [parse_key(key[1]).text]
-    assert source.signers_for("https://github.com/someone/else") == ()
+    expected = [parse_key(key[1]).text]
+    assert [k.text for k in source.signers_for(f"{official}/tree/v2026.11.01")] == expected  # a release
+    assert [k.text for k in source.signers_for(f"{official}/tree/0123456789abcdef0123456789abcdef01234567")] == expected  # a commit
+    assert source.signers_for(official) == () and source.signers_for(f"{official}/") == ()  # the default moves with every merge
+    assert source.signers_for(f"{official}/tree/main") == () and source.signers_for(f"{official}/tree/HEAD") == ()
+    assert source.signers_for("https://github.com/someone/else/tree/v1") == ()
     assert source.signers_for("https://example.org/fanbase") == ()
 
 
-def test_it_is_not_opened_if_it_is_not_signed(capsys, reg, key, served, monkeypatch):
+def test_a_release_is_not_opened_if_it_is_not_signed_and_main_is(capsys, reg, key, served, monkeypatch):
     url, web = served
     sync(reg, web)  # not signed
     monkeypatch.setattr(source, "DEFAULT_SIGNERS", (key[1],))
     monkeypatch.setattr(source, "is_official", lambda u: True)
+    monkeypatch.setattr(source, "moves", lambda u: False)  # (as a release is)
     with pytest.raises(SigningError, match="is not signed"):
         source.open_registry(source.Location("url", url))
+    monkeypatch.setattr(source, "moves", lambda u: True)  # (as main is)
+    assert source.open_registry(source.Location("url", url)).formats() == ["png"]
+
+
+def test_a_release_that_is_signed_opens_with_the_built_in_keys(capsys, reg, key, served, monkeypatch):
+    url, web = served
+    signed(capsys, reg, key)
+    sync(reg, web)
+    monkeypatch.setattr(source, "DEFAULT_SIGNERS", (key[1],))
+    monkeypatch.setattr(source, "is_official", lambda u: True)
+    monkeypatch.setattr(source, "moves", lambda u: False)
+    opened = source.open_registry(source.Location("url", url))
+    assert opened.signed_by.fingerprint == parse_key(key[1]).fingerprint

@@ -31,9 +31,10 @@ def is_official(url: str) -> bool:
 
 
 def signers_for(url: str) -> tuple[Key, ...]:
-    """The keys the index of this registry has to be signed by: the public registry's, if it is that; none otherwise
-    (a registry the user added has the ones the user pinned: see config)."""
-    return tuple(parse_key(key) for key in DEFAULT_SIGNERS) if is_official(url) else ()
+    """The keys the index of this registry has to be signed by: the public registry's, if it is that, at a release or a
+    commit; none otherwise. Not at `main`, the default: it moves with every merge, and a signature does not (it would be
+    refused after each merge until someone signed again). A registry the user added has the keys they pinned (config)."""
+    return tuple(parse_key(key) for key in DEFAULT_SIGNERS) if is_official(url) and not moves(url) else ()
 
 
 def moves(url: str) -> bool:

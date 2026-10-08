@@ -409,7 +409,8 @@ fanbase verify acme                         # is it still? (or: fanbase --regist
 
 The keys to trust are the user's choice, never the registry's: a registry that said which keys to trust would say so in the
 very files in question. They are pinned with `registry add --signer` (a key, or a `.pub` file; the registry has to be signed by
-one of them to be added), and kept in the user's config; the public registry's will be in the CLI itself. A registry that
+one of them to be added), and kept in the user's config; the public registry's will be in the CLI itself, and are checked for a
+release or a commit of it (`--registry .../tree/<tag>`), not for `main`, the default, which moves with every merge. A registry that
 has keys pinned is refused, with nothing in it believed, if its index is not signed, is signed by another key, or was changed
 after it was signed. Only modern keys (ed25519, ecdsa, security keys) are taken, and only the key itself, not a comment.
 
