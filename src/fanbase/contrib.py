@@ -20,7 +20,7 @@ from packaging.version import InvalidVersion, Version
 
 from fanbase.config import Config
 from fanbase.context import Context
-from fanbase.deps import check_version, closure, identity, parse_extends, self_names
+from fanbase.deps import check_version, closure, identity, parse_extends
 from fanbase.manager import (
     Installed,
     entry_sha,
