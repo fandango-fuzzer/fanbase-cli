@@ -27,6 +27,7 @@ from fanbase import __version__
 from fanbase.context import Context
 from fanbase.contrib import checkout, compare_registries, find_fandango, open_base, produce
 from fanbase.deps import dependents
+from fanbase.incidents import IncidentLog, check_recipients, run_meta, write_private
 from fanbase.manager import entry_sha
 from fanbase.output import clean
 from fanbase.registry import FORMAT_FILENAME, Entry, Registry, RegistryError
@@ -140,7 +141,8 @@ def _targets_of(reg: Registry, entry: Entry, only: list[str] | None) -> tuple[li
 
 # --- one spec
 
-def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str, scratch: Path, say) -> SpecReport:
+def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str, scratch: Path, say,
+                  incidents: IncidentLog | None = None) -> SpecReport:
     report = SpecReport(entry, None if entry.meta.get("version") is None else str(entry.meta["version"]),
                         entry_sha(reg, entry), args.count, decodes=entry.meta.get("decodes"))
     only = [t for t in args.targets.split(",") if t] if args.targets else None
@@ -172,8 +174,13 @@ def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str
             if (why := unavailable(target)) is not None:
                 report.targets.append(TargetReport(target.name, target.title, "unavailable", why))
                 continue
+            def note(tgt, file, verdict, confirmed):
+                incidents.record(spec=str(entry), version=report.version, sha256=report.sha256, target=tgt, file=file,
+                                 verdict=verdict, confirmed=confirmed)
+
             result = run_target(target, made.files, jobs=args.jobs, timeout=args.timeout, memory_mb=args.memory,
-                                hide_crashes=args.hide_crashes, cwd=scratch, budget=args.judge_budget or None)
+                                hide_crashes=args.hide_crashes, cwd=scratch, budget=args.judge_budget or None,
+                                incidents=note if incidents is not None else None)
             report.targets.append(TargetReport(target.name, target.title, "ok", version=result.version, result=result))
         return report
     finally:
@@ -305,8 +312,16 @@ def as_markdown(reports: list[SpecReport], args) -> str:
 
 def cmd_evaluate(args, ctx: Context) -> int:
     """Evaluate specs against the targets of their format."""
+    recipients = Path(args.incident_recipients) if args.incident_recipients else None
+    if recipients and not args.incidents:
+        raise RegistryError("--incident-recipients goes with --incidents DIR, where the private record is written")
+    if recipients:
+        args.hide_crashes = True  # a record that is private is not also printed
     if args.hide_crashes and args.keep:
         raise RegistryError("--keep would save the inputs that crash targets; it does not go with --hide-crashes")
+    if recipients:
+        check_recipients(recipients)  # before anything runs: no way to keep it private, no run
+    log = IncidentLog() if args.incidents else None
     reg = checkout(ctx)
     fandango = find_fandango()
     if fandango is None:
@@ -318,11 +333,19 @@ def cmd_evaluate(args, ctx: Context) -> int:
         for entry in selected:
             print(f"evaluating {entry} ...", file=sys.stderr)
             try:
-                reports.append(evaluate_spec(reg, entry, ctx, args, fandango, scratch, say=lambda line: print(line, file=sys.stderr)))
+                reports.append(evaluate_spec(reg, entry, ctx, args, fandango, scratch,
+                                             say=lambda line: print(line, file=sys.stderr), incidents=log))
             except TargetError as exc:
                 raise RegistryError(f"{entry}: {exc}") from None
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+    if log is not None:
+        saved = write_private(log, run_meta(args.seed, args.count), Path(args.incidents), recipients)
+        if recipients:  # the same words whatever happened
+            print(f"private record: {saved}", file=sys.stderr)
+        elif saved:
+            print(f"{len(log.incidents)} incident(s) saved in {saved}", file=sys.stderr)
 
     document = to_json(reports, args)
     if args.json_file:

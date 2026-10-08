@@ -85,10 +85,22 @@ class Target:
     version: tuple[str, ...] | None = None
 
 
+INCIDENT_STDERR = 8192  # how much of what a target said is kept for the private record
+
+CRASH_KIND, HANG_KIND, KILLED_KIND = "crash", "hang", "killed"
+
+
 @dataclass(frozen=True)
 class Verdict:
     category: str
     reason: str = ""
+    # An incident is a target that broke on a file: it crashed, hung, or was killed for what it used. It is
+    # not for any public place (it may be a vulnerability that is not fixed yet), and the private record
+    # of it is made from what follows.
+    incident: str = ""  # "", or crash, hang or killed
+    returncode: int | None = None
+    stderr: bytes = b""
+    argv: tuple[str, ...] = ()  # what was run, with the file as INPUT
 
 
 def _strings(value: object, where: str, what: str, empty: bool = False) -> list[str]:
@@ -223,7 +235,7 @@ _DIMENSIONS = re.compile(r"\d+x\d+")  # an image size: different for every file 
 _DIGITS = re.compile(r"\d{3,}")
 
 
-def _reason(text: str, path: Path) -> str:
+def normalise_reason(text: str, path: Path) -> str:
     """The first line of what a target said, made the same for files that differ only in
     their name or in a number, so that the same reason is counted as one."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -239,12 +251,14 @@ def _reason(text: str, path: Path) -> str:
 def judge(target: Target, path: Path, *, timeout: int = 10, memory_mb: int = 2048, cwd: Path | None = None) -> Verdict:
     """Ask the target about one file."""
     argv = _expand(target.run, target, path)
+    shown = tuple(_expand(target.run, target, "INPUT"))
     if os.name == "posix":
         argv = [sys.executable, "-m", "fanbase._limits", str(memory_mb), str(timeout + 5), *argv]
     try:
         done = subprocess.run(argv, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, cwd=cwd)
-    except subprocess.TimeoutExpired:
-        return Verdict(TIMEOUT, f"no answer in {timeout} seconds")
+    except subprocess.TimeoutExpired as exc:
+        return Verdict(TIMEOUT, f"no answer in {timeout} seconds", HANG_KIND, None,
+                       (exc.stderr or b"")[:INCIDENT_STDERR] if isinstance(exc.stderr, bytes) else b"", shown)
     except OSError as exc:
         raise TargetError(f"cannot run the target {target.name}: {exc}") from None
 
@@ -256,10 +270,12 @@ def judge(target: Target, path: Path, *, timeout: int = 10, memory_mb: int = 204
             killer = signal.Signals(-done.returncode)
         except ValueError:
             killer = None
-        return Verdict(LIMIT if killer in _LIMIT_SIGNALS else CRASH, f"killed by {killer.name if killer else -done.returncode}")
+        limited = killer in _LIMIT_SIGNALS
+        return Verdict(LIMIT if limited else CRASH, f"killed by {killer.name if killer else -done.returncode}",
+                       KILLED_KIND if limited else CRASH_KIND, done.returncode, done.stderr[:INCIDENT_STDERR], shown)
     if done.returncode in (126, 127) or "Traceback (most recent call last)" in said:
-        return Verdict(ERROR, _reason(said, path) or f"exited with {done.returncode}")
-    reason = _reason(said, path)
+        return Verdict(ERROR, normalise_reason(said, path) or f"exited with {done.returncode}")
+    reason = normalise_reason(said, path)
     for rule in target.rules:
         if rule.pattern.search(said):
             return Verdict(rule.category, reason)
@@ -289,13 +305,18 @@ class TargetResult:
 
 
 def run_target(target: Target, files: list[Path], *, jobs: int = 1, timeout: int = 10, memory_mb: int = 2048,
-               hide_crashes: bool = False, cwd: Path | None = None, budget: float | None = None) -> TargetResult:
+               hide_crashes: bool = False, cwd: Path | None = None, budget: float | None = None,
+               incidents=None) -> TargetResult:
     """Ask the target about each file. With `hide_crashes`, a crash or a hang is counted as an
     error and nothing about it is kept: for reports that are public. (A hang can be a
     vulnerability that is not fixed yet, as a crash can.)
 
     A target can be slow on a spec: it may wait out its timeout on file after file. With a `budget`
     (seconds), once the time is up the files not yet asked about are skipped, and counted as such.
+
+    `incidents`, if given, is called as `incidents(target, file, verdict, confirmed)` for each file that
+    broke the target, from the worker threads. Before it is, the target is asked about the file once
+    more (a hang with twice the time) so as to say whether it happens again: a hang can be a busy machine.
     """
     import time
 
@@ -306,7 +327,12 @@ def run_target(target: Target, files: list[Path], *, jobs: int = 1, timeout: int
     def ask(file: Path) -> Verdict | None:
         if deadline is not None and time.monotonic() >= deadline:
             return None
-        return judge(target, file, timeout=timeout, memory_mb=memory_mb, cwd=cwd)
+        verdict = judge(target, file, timeout=timeout, memory_mb=memory_mb, cwd=cwd)
+        if verdict.incident and incidents is not None:
+            again = judge(target, file, timeout=timeout * 2 if verdict.incident == HANG_KIND else timeout,
+                          memory_mb=memory_mb, cwd=cwd)
+            incidents(target, file, verdict, again.incident == verdict.incident)
+        return verdict
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         verdicts = list(pool.map(ask, files))

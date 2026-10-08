@@ -634,6 +634,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-j", "--jobs", type=int, default=min(4, os.cpu_count() or 1), metavar="N", help="files asked about at the same time")
     p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import")
     p.add_argument("--hide-crashes", action="store_true", help="count a crash or a hang as a plain error and say nothing about it: for public reports")
+    p.add_argument("--incidents", metavar="DIR", help="write the private record of targets that crash, hang or are killed to DIR (only you can read it)")
+    p.add_argument("--incident-recipients", metavar="FILE", help="with --incidents: encrypt the record with age to the public key(s) in FILE, and never print anything about it; for CI")
     p.add_argument("--keep", metavar="DIR", help="keep the inputs in DIR (to look at them locally)")
     p.add_argument("--strict", action="store_true", help="exit 1 if a spec does not decode as often as it says it should")
     p.add_argument("--require-targets", action="store_true", help="exit 1 if a target cannot run here")
