@@ -13,7 +13,7 @@ from fanbase.registry import Registry
 def write_spec(root: Path, fmt: str, kind: str, text: str, description: str = "", **meta) -> None:
     folder = root / "specs" / fmt / kind
     folder.mkdir(parents=True)
-    (folder / f"{kind}.fan").write_text(text, encoding="utf-8")
+    (folder / f"{kind}.fan").write_text(text, encoding="utf-8", newline="\n")
     if description or meta:
         import yaml
 
@@ -45,7 +45,7 @@ def republish(root: Path, kind: str, text: str | None = None, **meta) -> None:
     fmt = kind.split("-")[0]
     folder = root / "specs" / fmt / kind
     if text is not None:
-        (folder / f"{kind}.fan").write_text(text)
+        (folder / f"{kind}.fan").write_text(text, newline="\n")
     if meta:
         data = yaml.safe_load((folder / "metadata.yml").read_text())
         data.update(meta)

@@ -50,7 +50,7 @@ def build(root, specs, name=None):
 def republish(root, kind, text, **meta):
     """The registry changes a spec: new text, and optionally new metadata."""
     fmt = kind.split("-")[0]
-    (root / "specs" / fmt / kind / f"{kind}.fan").write_text(text)
+    (root / "specs" / fmt / kind / f"{kind}.fan").write_text(text, newline="\n")
     if meta:
         path = root / "specs" / fmt / kind / "metadata.yml"
         data = yaml.safe_load(path.read_text())

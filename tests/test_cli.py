@@ -35,7 +35,7 @@ def test_list_install_update(capsys, registry, served, root, remote):
     code, out, _ = run(capsys, "--registry", where, "update")
     assert out.count("up to date") == 2
 
-    (registry / "specs/png/png/png.fan").write_text("<start> ::= 'changed'\n")
+    (registry / "specs/png/png/png.fan").write_text("<start> ::= 'changed'\n", newline="\n")
     from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
     from fanbase.registry import Registry
 
@@ -63,7 +63,7 @@ def test_unreachable_registry_is_an_error(capsys, root):
 def test_reindex_and_check(capsys, registry):
     code, out, _ = run(capsys, "--registry", str(registry), "reindex", "--check")
     assert code == 0
-    (registry / "specs/png/png/png.fan").write_text("import brotli\n<start> ::= 'x'\n")
+    (registry / "specs/png/png/png.fan").write_text("import brotli\n<start> ::= 'x'\n", newline="\n")
     code, out, _ = run(capsys, "--registry", str(registry), "reindex", "--check")
     assert code == 1 and "out of date" in out
     code, out, _ = run(capsys, "--registry", str(registry), "reindex")
@@ -104,7 +104,7 @@ def test_install_all(capsys, registry, served, root, remote):
 
 
 def test_install_all_reports_what_the_specs_need(capsys, registry, root, pip_calls):
-    (registry / "specs/png/png-apng/png-apng.fan").write_text("import brotli\n<start> ::= 'x'\n")
+    (registry / "specs/png/png-apng/png-apng.fan").write_text("import brotli\n<start> ::= 'x'\n", newline="\n")
     run(capsys, "--registry", str(registry), "reindex")
     code, out, _ = run(capsys, "--registry", str(registry), "install", "--all", "--no-requirements")
     assert code == 0 and "requires: pip install brotli" in out
@@ -139,7 +139,7 @@ def test_list_installed_asks_no_registry(capsys, registry, root):
 
 def test_list_installed_ignores_spec_files_fanbase_did_not_install(capsys, root):
     (root / "mine").mkdir(parents=True)
-    (root / "mine" / "mine.fan").write_text("<start> ::= 'x'\n")
+    (root / "mine" / "mine.fan").write_text("<start> ::= 'x'\n", newline="\n")
     code, out, _ = run(capsys, "list", "--installed")
     assert code == 0 and out.strip() == "nothing installed"
 

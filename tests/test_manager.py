@@ -25,7 +25,7 @@ def test_install_updates_a_changed_spec(registry, tmp_path):
     root = tmp_path / "fandango"
     reg = Registry(registry)
     install(reg, reg.resolve("png"), root)
-    (registry / "specs/png/png/png.fan").write_text("<start> ::= 'new'\n")
+    (registry / "specs/png/png/png.fan").write_text("<start> ::= 'new'\n", newline="\n")
     again = install(reg, reg.resolve("png"), root)
     assert again.status == "updated"
     assert again.path.read_text() == "<start> ::= 'new'\n"
@@ -78,6 +78,7 @@ def test_ensure_unknown_spec_is_not_masked_by_an_installed_copy(served, tmp_path
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # where Path.home() looks on Windows
     monkeypatch.delenv("FANDANGO_PATH", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     return tmp_path / "home"

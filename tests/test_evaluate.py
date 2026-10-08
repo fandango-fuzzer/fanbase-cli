@@ -342,7 +342,7 @@ def test_a_registry_without_targets(capsys, tmp_path):
 @pytest.mark.skipif(contrib.find_fandango() is None, reason="fandango is not installed")
 def test_with_the_real_fandango(capsys, tmp_path, monkeypatch):
     root = build_registry(tmp_path / "real", {("txt", "txt"): dict(version="1.0", description="x", decodes="mostly")})
-    (root / "specs/txt/txt/txt.fan").write_text('<start> ::= "good" "-" <n>\n<n> ::= "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"\n')
+    (root / "specs/txt/txt/txt.fan").write_text('<start> ::= "good" "-" <n>\n<n> ::= "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"\n', newline="\n")
     target(root, "any", ACCEPT, formats=("txt",))
     (root / "specs/txt/format.yml").write_text(yaml.safe_dump({"targets": ["any"]}))
     settle(root)

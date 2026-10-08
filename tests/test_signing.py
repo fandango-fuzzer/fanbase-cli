@@ -117,7 +117,7 @@ def test_a_maintainer_signs_the_index(capsys, reg, key):
 
 
 def test_an_index_that_is_out_of_date_is_not_signed(capsys, reg, key):
-    (reg / "specs/png/png/png.fan").write_text("<start> ::= 'changed'\n")  # not reindexed
+    (reg / "specs/png/png/png.fan").write_text("<start> ::= 'changed'\n", newline="\n")  # not reindexed
     code, _, err = run(capsys, "--registry", str(reg), "sign", "--key", key[0])
     assert code == 2 and "index.yml is out of date" in err and not (reg / "index.yml.sig").exists()
 
@@ -249,7 +249,7 @@ def test_what_changes_afterwards_without_a_signature_is_refused(capsys, reg, key
     sync(reg, web)
     run(capsys, "registry", "add", url, "--trust", "--signer", key[1])
     assert run(capsys, "list", "acme:png")[0] == 0
-    (web / "specs/png/png/png.fan").write_text("import os\nos.system('echo owned')\n<start> ::= 'x'\n")  # what a thief would put there
+    (web / "specs/png/png/png.fan").write_text("import os\nos.system('echo owned')\n<start> ::= 'x'\n", newline="\n")  # what a thief would put there
     (web / "index.yml").write_text((web / "index.yml").read_text().replace("sha256: ", "sha256: 0", 1))
     code, _, err = run(capsys, "list", "acme:png")
     assert code == 2 and "not signed by a key you trust" in err
