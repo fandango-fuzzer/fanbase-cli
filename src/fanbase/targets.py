@@ -19,6 +19,13 @@ interpreter that runs fanbase. The command is run for each file, with limits, an
 the verdict: 0 accepts the file; anything else rejects it, and what it printed says why. Killed by
 a signal is a crash, or, when it ran out of memory or time, a resource limit.
 
+A target that is built to be measured also says how, in a `coverage:` section (see coverage.py):
+
+    coverage:
+      reset: ["/opt/cov/reset", "libpng"]          # clears what has been covered
+      snapshot: ["/opt/cov/snapshot", "libpng"]    # prints what has been covered since, as JSON
+      seeds: ["/opt/cov/seeds/png/*"]              # real files to compare the generated ones with
+
 A target is a command that a registry tells fanbase to run, so it is as much code as a spec is. They are
 run from a registry checkout, by whoever has read it, and in CI on a machine that is thrown away.
 """
@@ -72,6 +79,13 @@ class Rule:
 
 
 @dataclass(frozen=True)
+class CoverageSpec:
+    snapshot: tuple[str, ...]  # prints what has been covered since the last reset, as JSON (see coverage.py)
+    reset: tuple[str, ...] = ()
+    seeds: tuple[str, ...] = ()  # globs of real files; relative ones to the target's folder
+
+
+@dataclass(frozen=True)
 class Target:
     name: str
     directory: Path
@@ -83,6 +97,7 @@ class Target:
     pip: tuple[str, ...] = ()
     rules: tuple[Rule, ...] = ()
     version: tuple[str, ...] | None = None
+    coverage: CoverageSpec | None = None
 
 
 INCIDENT_STDERR = 8192  # how much of what a target said is kept for the private record
@@ -187,8 +202,28 @@ def load_target(root: Path, name: str) -> Target:
         except re.error as exc:
             raise TargetError(f"{where}: classify pattern {item['match']!r}: {exc}") from None
 
+    coverage = _coverage(data.get("coverage"), folder, where)
     return Target(name, folder, title.strip(), tuple(formats), run, tuple(commands), tuple(modules), tuple(pip),
-                  tuple(rules), version)
+                  tuple(rules), version, coverage)
+
+
+def _coverage(value: object, folder: Path, where: str) -> CoverageSpec | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) - {"reset", "snapshot", "seeds"}:
+        raise TargetError(f"{where}: coverage has to be a mapping with snapshot, and reset and seeds if needed")
+    if "snapshot" not in value:
+        raise TargetError(f"{where}: coverage needs a snapshot: the command that says what has been covered")
+    snapshot = _command_line(value["snapshot"], where, "coverage.snapshot", needs_file=False)
+    reset = _command_line(value["reset"], where, "coverage.reset", needs_file=False) if "reset" in value else ()
+    for argv, what in ((snapshot, "coverage.snapshot"), (reset, "coverage.reset")):
+        _check_files(argv, folder, where, what)
+        if any("{file}" in part for part in argv):
+            raise TargetError(f"{where}: {what} is not about a file: it cannot have {{file}}")
+    seeds = tuple(_strings(value["seeds"], where, "coverage.seeds", empty=True)) if "seeds" in value else ()
+    if any(".." in Path(seed).parts or "\0" in seed for seed in seeds):
+        raise TargetError(f"{where}: coverage.seeds cannot leave the target's folder with ..")
+    return CoverageSpec(snapshot, reset, seeds)
 
 
 def target_names(root: Path) -> list[str]:

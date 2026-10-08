@@ -329,6 +329,44 @@ are that concrete inputs and unfixed vulnerabilities are not published. A crash 
 what you run locally. With `--hide-crashes`, which CI uses for anything public, it is counted as a plain error and
 nothing about it is kept, and no input is ever saved unless you ask with `--keep DIR` (which does not go with it).
 
+### How much of a parser the files reach: `--coverage`
+
+That a parser accepts a file says little about how much of the parser the file ran. A target that is built to be
+measured says so in its `target.yml`, and `fanbase evaluate --coverage` asks how much of the library the generated
+files reach, against a few real files:
+
+```bash
+fanbase evaluate png --coverage -n 1000 --curve 1,10,100,1000      # + every target that can be measured; --coverage-only: just those
+```
+
+```
+  coverage of libpng-cov libpng 1.6.59: 8119 lines, 5547 branches
+    6 real file(s) reach 1306 (16.1%) lines and 652 (11.8%) branches
+    1 generated: 1213 (14.9%) lines, 587 (10.6%) branches
+    100 generated: 1824 (22.5%) lines, 939 (16.9%) branches
+    the generated files reach 728 lines the real ones do not; the real ones reach 210 the generated ones do not
+```
+
+- The real files (`seeds`) are run first: that is the baseline. Then the generated files, one after another, with the
+  coverage read after the 1st, 10th, 100th (`--curve`, default 1, 10, 100, 1000, and the last): a curve that is
+  flat from the first input says the spec makes files that are all alike.
+- The comparison says what the generated files reach that real ones do not (what a grammar finds that a camera
+  does not) and the reverse (what the spec is missing).
+- fanbase does not know how coverage is counted. The target says how to clear it and how to read it:
+
+```yaml
+coverage:
+  reset: ["/opt/cov/bin/cov-reset", "libpng"]            # clears what has been covered
+  snapshot: ["/opt/cov/bin/cov-snapshot", "libpng"]      # prints what has been covered since, as JSON
+  seeds: ["/opt/cov/seeds/png/*"]                        # real files; a relative pattern is in the target's folder
+```
+
+  The snapshot is `{"schema": 1, "lines": {"total": N, "covered": ["file:line", ...]}, "branches": {...}}` (branches
+  are optional), so a C library built with gcov, a Python module measured with coverage.py, or anything else, fits.
+  The registry's `coverage/` has an image with libpng, libjpeg-turbo, giflib, libtiff, libwebp and stb_image built
+  with gcov, so that CI compiles nothing. The files are run one at a time, in order (the counters are shared), and
+  what the verdict pass ran does not count: the counters are cleared first.
+
 ### The private record of crashes and hangs
 
 Hiding a crash from a public report is not the same as losing it: whoever runs the evaluation is the one who has to

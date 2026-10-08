@@ -26,6 +26,7 @@ from pathlib import Path
 from fanbase import __version__
 from fanbase.context import Context
 from fanbase.contrib import changed_specs, checkout, find_fandango, produce
+from fanbase.coverage import DEFAULT_CURVE, CoverageError, CoverageResult, coverage_targets, measure
 from fanbase.incidents import IncidentLog, check_recipients, run_meta, write_private
 from fanbase.manager import entry_sha
 from fanbase.output import clean
@@ -61,6 +62,7 @@ class TargetReport:
     note: str = ""
     version: str | None = None
     result: TargetResult | None = None
+    coverage: CoverageResult | None = None
 
 
 @dataclass
@@ -137,6 +139,10 @@ def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str
                         entry_sha(reg, entry), args.count, decodes=entry.meta.get("decodes"))
     only = [t for t in args.targets.split(",") if t] if args.targets else None
     targets, report.targets = _targets_of(reg, entry, only)
+    if getattr(args, "coverage_only", False):  # only the targets that can be measured
+        targets, report.targets = coverage_targets(reg.root, entry.format, []), []
+    elif getattr(args, "coverage", False):  # they join the ones the format names
+        targets += coverage_targets(reg.root, entry.format, targets)
     if not targets:
         report.unjudged = (f"no targets for {entry.format}: name some in specs/{entry.format}/{FORMAT_FILENAME}"
                            if not report.targets else "none of the targets judges this format")
@@ -171,7 +177,14 @@ def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str
             result = run_target(target, made.files, jobs=args.jobs, timeout=args.timeout, memory_mb=args.memory,
                                 hide_crashes=args.hide_crashes, cwd=scratch, budget=args.judge_budget or None,
                                 incidents=note if incidents is not None else None)
-            report.targets.append(TargetReport(target.name, target.title, "ok", version=result.version, result=result))
+            row = TargetReport(target.name, target.title, "ok", version=result.version, result=result)
+            report.targets.append(row)
+            if getattr(args, "coverage", False) and target.coverage is not None:
+                try:
+                    row.coverage = measure(target, made.files, args.curve_points, timeout=args.timeout,
+                                           memory_mb=args.memory, cwd=scratch)
+                except CoverageError as exc:
+                    row.note = f"coverage: {exc}"
         return report
     finally:
         made.cleanup()
@@ -209,6 +222,7 @@ def to_json(reports: list[SpecReport], args) -> dict:
                             "files_per_second": round(t.result.per_second, 1),
                             "reasons": [[why, n] for why, n in t.result.top_reasons(5)],
                         } if t.result else {}),
+                        **({"coverage": t.coverage.to_dict()} if t.coverage else {}),
                     }
                     for t in r.targets
                 ],
@@ -240,6 +254,34 @@ def _rows(r: SpecReport) -> list[list[str]]:
     return rows
 
 
+def _coverage_lines(r: SpecReport) -> list[tuple[TargetReport, list[str]]]:
+    """What each measured target says about how much of it the files reach, as plain lines."""
+    out = []
+    for t in r.targets:
+        c = t.coverage
+        if c is None:
+            continue
+        def share(n: int | None, total: int | None) -> str:
+            return "" if n is None else (f"{n}" + (f" ({n / total:.1%})" if total else ""))
+
+        head = f"{t.name}{' ' + clean(t.version) if t.version else ''}: {c.lines_total} lines"
+        if c.branches_total:
+            head += f", {c.branches_total} branches"
+        lines = [head]
+        if c.seed_lines is not None:
+            lines.append(f"{c.seeds} real file(s) reach {share(c.seed_lines, c.lines_total)} lines"
+                         + (f" and {share(c.seed_branches, c.branches_total)} branches" if c.seed_branches is not None else ""))
+        for n, covered, branches in c.curve:
+            lines.append(f"{n} generated: {share(covered, c.lines_total)} lines"
+                         + (f", {share(branches, c.branches_total)} branches" if branches is not None else ""))
+        if c.only_generated is not None:
+            lines.append(f"the generated files reach {c.only_generated} lines the real ones do not; the real ones reach {c.only_seeds} the generated ones do not")
+        if c.note:
+            lines.append(clean(c.note))
+        out.append((t, lines))
+    return out
+
+
 def as_text(reports: list[SpecReport], args) -> str:
     out = []
     for r in reports:
@@ -265,6 +307,8 @@ def as_text(reports: list[SpecReport], args) -> str:
                     out.append(f"    {t.name}: out of time after {t.result.total} of {t.result.total + t.result.skipped} files")
                 for why, n in t.result.top_reasons(2):
                     out.append(clean(f"    {t.name}: {n}x {why}"))
+        for _, lines in _coverage_lines(r):
+            out += ["  coverage of " + lines[0], *[f"    {line}" for line in lines[1:]]]
         if expect := _expectation(r):
             out.append(f"  {expect}")
         out.append("")
@@ -292,6 +336,20 @@ def as_markdown(reports: list[SpecReport], args) -> str:
         for t in r.targets:
             if t.result and t.result.skipped:
                 out += ["", f"_{t.name}: out of time after {t.result.total} of {t.result.total + t.result.skipped} files._"]
+        for t, lines in _coverage_lines(r):
+            c = t.coverage
+            assert c is not None
+            out += ["", f"**Coverage of {lines[0]}**", ""]
+            out += ["| inputs | lines | branches |", "|---|--:|--:|"]
+            if c.seed_lines is not None:
+                out.append(f"| {c.seeds} real | {c.seed_lines} | {'' if c.seed_branches is None else c.seed_branches} |")
+            out += [f"| {n} generated | {covered} ({covered / c.lines_total:.1%}) | {'' if branches is None else branches} |"
+                    if c.lines_total else f"| {n} generated | {covered} | {'' if branches is None else branches} |"
+                    for n, covered, branches in c.curve]
+            if c.only_generated is not None:
+                out += ["", f"The generated files reach {c.only_generated} lines the real ones do not; the real ones reach {c.only_seeds} the generated ones do not."]
+            if c.note:
+                out += ["", f"_{clean(c.note)}_"]
         if expect := _expectation(r):
             out += ["", f"{'✅' if r.met else '⚠️'} {expect}"]
         out.append("")
@@ -299,6 +357,16 @@ def as_markdown(reports: list[SpecReport], args) -> str:
 
 
 # --- the command
+
+def _curve(text: str) -> tuple[int, ...]:
+    try:
+        points = tuple(int(part) for part in text.split(",") if part.strip())
+    except ValueError:
+        points = ()
+    if not points or any(n < 1 for n in points):
+        raise RegistryError(f"--curve is a list of numbers of inputs, like 1,10,100,1000; not {clean(text)!r}")
+    return points
+
 
 def cmd_evaluate(args, ctx: Context) -> int:
     """Evaluate specs against the targets of their format."""
@@ -311,6 +379,9 @@ def cmd_evaluate(args, ctx: Context) -> int:
         raise RegistryError("--keep would save the inputs that crash targets; it does not go with --hide-crashes")
     if recipients:
         check_recipients(recipients)  # before anything runs: no way to keep it private, no run
+    if getattr(args, "coverage_only", False):
+        args.coverage = True
+    args.curve_points = _curve(args.curve) if getattr(args, "curve", None) is not None else DEFAULT_CURVE
     log = IncidentLog() if args.incidents else None
     reg = checkout(ctx)
     fandango = find_fandango()
