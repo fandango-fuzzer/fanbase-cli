@@ -1,47 +1,97 @@
 """The `fanbase` command.
 
-Browses and installs from a Fanbase registry. By default that is the public registry, read
+Browses and installs from Fanbase registries. By default that is the public registry, read
 over the network from its `index.yml`; a spec is only fetched when you ask for it. A local
-checkout works too, which is what maintainers use.
+checkout works too, which is what maintainers use. Registries you add are named in front
+of a spec: `acme:png/png-strict`.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import Counter
+from pathlib import Path
 
 import yaml
 
 from fanbase import __version__
+from fanbase.config import RegistryConfig, check_registry_name, check_token_env, save_config
+from fanbase.context import Context
+from fanbase.deps import closure, dependencies, dependents, label, self_names
+from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
+from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
+from fanbase.doi import cmd_doi
+from fanbase.evaluate import cmd_evaluate, cmd_targets
+from fanbase.incident_cmds import cmd_incidents_open, cmd_incidents_send
+from fanbase.incident_track import (
+    cmd_incidents_list,
+    cmd_incidents_show,
+    cmd_incidents_tracked,
+    cmd_incidents_track,
+    cmd_incidents_verify,
+)
 from fanbase.manager import (
+    FandangoMismatch,
     Installed,
+    all_installed,
+    declared_requirements,
     ensure_requirements,
+    entry_sha,
     install,
     install_root,
-    installed_specs,
     spec_path,
+    uninstall,
 )
-from fanbase.manifest import INDEX_FILENAME, dump_index, reindex
-from fanbase.registry import Registry, RegistryBase, RegistryError
-from fanbase.source import find_registry
-
+from fanbase.lock import LOCK_FILENAME, load_lock, lock_path, save_lock
+from fanbase.locking import build_lock, check_locked, compare, locked_registry
+from fanbase.manifest import INDEX_FILENAME, dump_index, index_is_stale, reindex
+from fanbase.output import clean, dump_json
+from fanbase.publish import cmd_publish
+from fanbase.quality import cmd_quality_build, for_registry, of as quality_of, summary as quality_summary
+from fanbase.rebase import cmd_rebase
+from fanbase.registry import Registry, RegistryBase, RegistryError, split_registry
+from fanbase.remote import RemoteRegistry
+from fanbase.signing import Key, cmd_sign, cmd_verify, read_keys
+from fanbase.site import cmd_site
+from fanbase.source import locate_registry, moves
 
 _VERB = {"installed": "installed", "updated": "updated", "current": "up to date", "offline": "kept"}
 
+_clean = clean
+
 
 def _report(done: Installed, hint_requirements: bool) -> None:
-    print(f"{_VERB[done.status]} {done} -> {done.path}")
+    print(f"{_VERB[done.status]} {_clean(done)} -> {done.path}")
     if done.status != "current":
-        print(f'  include("{done.format}/{done.kind}.fan")')
-    if hint_requirements and done.requires:
-        print(f"  requires: pip install {' '.join(done.requires)}")
+        print(f'  include("{_clean(done.include_path)}")')
+    if hint_requirements and (needs := declared_requirements(done.meta)):
+        print(f"  requires: pip install {' '.join(needs)}")
+
+
+# Past this many specs with the same problem, it is said once rather than once for each.
+_NAMED_ONE_BY_ONE = 3
+
+
+def _warn_fandango(results: list[Installed]) -> None:
+    groups: dict[FandangoMismatch, list[Installed]] = {}
+    for done in results:
+        if mismatch := done.fandango_check:
+            groups.setdefault(mismatch, []).append(done)
+    for mismatch, specs in groups.items():
+        if len(specs) <= _NAMED_ONE_BY_ONE:
+            for done in specs:
+                print(f"warning: {_clean(done)} {_clean(mismatch.describe())}", file=sys.stderr)
+        else:
+            named = ", ".join(_clean(done) for done in specs[:_NAMED_ONE_BY_ONE])
+            print(f"warning: {len(specs)} specs {_clean(mismatch.describe(many=True))} ({named}, ...)", file=sys.stderr)
 
 
 def _install_requirements(results: list[Installed], args) -> None:
     """Install what the specs need, once for all of them; or only say what is needed."""
     if args.no_requirements:
-        needs = sorted({package for done in results for package in done.requires})
+        needs = sorted({package for done in results for package in declared_requirements(done.meta)})
         if needs and args.all:
             print(f"requires: pip install {' '.join(needs)}")
         return
@@ -53,90 +103,416 @@ def _install_requirements(results: list[Installed], args) -> None:
                 print(f"installed requirement {requirement}")
 
 
-def cmd_list(args, reg: RegistryBase) -> int:
+def _install_specs(pairs, root: Path | None = None) -> list[Installed]:
+    """Install specs and what they extend, each once, what is extended before what extends it."""
+    seen: set[tuple[str, str, str]] = set()
+    results = []
+    for reg, entry, ctx in pairs:
+        for dep_reg, dep_entry in closure(ctx, reg, entry):
+            key = (dep_reg.name, dep_entry.format, dep_entry.kind)
+            if key not in seen:
+                seen.add(key)
+                results.append(install(dep_reg, dep_entry, root))
+    return results
+
+
+def _list_installed(where: str | None, as_json: bool = False) -> int:
+    """What is installed; `where` narrows it: `png`, `acme:` (a whole registry), `acme:png`."""
+    name, fmt = split_registry(where) if where else (None, "")
+    have = [
+        done for done in all_installed()
+        if (not where or done.registry == (name or "")) and (not fmt or done.format == fmt)
+    ]
+    if as_json:
+        print(dump_json([
+            {"spec": str(done), "registry": done.registry or "fanbase", "format": done.format, "kind": done.kind,
+             "version": done.meta.get("version"), "description": done.meta.get("description"),
+             "path": str(done.path), "sha256": done.meta.get("sha256")}
+            for done in have
+        ]))
+        return 0
+    if not have:
+        print("nothing installed")
+        return 0
+    width = max(len(str(done)) for done in have)
+    for done in have:
+        print(f"  {_clean(done):<{width}}  {_clean(done.meta.get('description') or '')}".rstrip())
+    return 0
+
+
+def _quality_json(found) -> dict:
+    return {"quality": found[0], "quality_current": found[1]} if found else {}
+
+
+def cmd_list(args, ctx: Context) -> int:
+    if args.installed:
+        return _list_installed(args.format, args.json)
+    name, fmt = split_registry(args.format) if args.format else (None, "")
+    reg = ctx.registry(name)
     root = install_root()
-    if args.format:
-        if args.format not in reg.formats():
-            raise RegistryError(f"unknown format: {args.format}")
-        entries = reg.kinds(args.format)
+    if fmt:
+        if fmt not in reg.formats():
+            raise RegistryError(f"unknown format: {_clean(fmt)}")
+        entries = reg.kinds(fmt)
+        results = for_registry(reg, getattr(args, "quality", None))
+        known = {e.kind: quality_of(results, e, entry_sha(reg, e)) for e in entries} if results else {}
+        if args.json:
+            print(dump_json([
+                {"kind": e.kind, "version": e.meta.get("version"), "description": e.meta.get("description"),
+                 "extensions": e.meta.get("extensions") or [], "requires": e.requires,
+                 "installed": spec_path(root, e.format, e.kind, reg.name).is_file(),
+                 **_quality_json(known.get(e.kind))}
+                for e in entries
+            ]))
+            return 0
         width = max(len(e.kind) for e in entries)
         for e in entries:
-            have = "*" if spec_path(root, e.format, e.kind).is_file() else " "
-            notes = [e.meta.get("description"), e.requires and f"(requires: {', '.join(e.requires)})"]
-            print(f" {have}{e.kind:<{width}}  {' '.join(n for n in notes if n)}".rstrip())
+            have = "*" if spec_path(root, e.format, e.kind, reg.name).is_file() else " "
+            found = known.get(e.kind)
+            notes = [e.meta.get("description"), e.requires and f"(requires: {', '.join(e.requires)})",
+                     found and f"[{quality_summary(*found)}]"]
+            print(_clean(f" {have}{e.kind:<{width}}  {' '.join(n for n in notes if n)}").rstrip())
         print("\n* installed")
+        if results is not None and not any(known.values()):
+            print("(the quality results do not cover these specs)")
         return 0
 
     formats = reg.formats()
+    if args.json:
+        print(dump_json([{"format": f, "specs": len(reg.kinds(f))} for f in formats]))
+        return 0
     width = max((len(f) for f in formats), default=0)
-    for fmt in formats:
-        n = len(reg.kinds(fmt))
-        print(f"  {fmt:<{width}}  {n} spec{'' if n == 1 else 's'}")
+    for f in formats:
+        n = len(reg.kinds(f))
+        print(_clean(f"  {f:<{width}}  {n} spec{'' if n == 1 else 's'}"))
     return 0
 
 
-def cmd_show(args, reg: RegistryBase) -> int:
-    entry = reg.resolve(args.ref)
+def cmd_show(args, ctx: Context) -> int:
+    reg, entry = ctx.resolve(args.ref)
     meta = {"format": entry.format, "kind": entry.kind, "path": entry.path, **entry.meta}
+    if reg.name:
+        meta = {"registry": reg.name, **meta}
+    results = for_registry(reg, getattr(args, "quality", None))
+    found = quality_of(results, entry, entry_sha(reg, entry)) if results else None
+    if found:
+        meta = {**meta, "quality": {**found[0], "current": found[1]}}
+    if args.json:
+        print(dump_json(meta))
+        return 0
     print(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), end="")
+    if found:
+        print(f"# quality: {quality_summary(*found)}")
+    elif results is not None:
+        print("# quality: the results do not cover this spec")
     return 0
 
 
-def cmd_install(args, reg: RegistryBase) -> int:
-    if args.all == bool(args.refs):
-        raise RegistryError("name the specs to install, or give --all (not both)")
-    root = None
-    if args.into:
-        from pathlib import Path
-
-        root = Path(args.into)
-
-    if args.all:
-        entries = [e for fmt in reg.formats() for e in reg.kinds(fmt)]
-        results = [install(reg, e, root) for e in entries]
-        for done in results:
-            print(f"{_VERB[done.status]} {done}")
-        counts = Counter(_VERB[done.status] for done in results)
-        summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
-        where = f" in {results[0].path.parent.parent}" if results else ""
-        print(f"{len(results)} specs: {summary}{where}")
-    else:
-        results = []
-        for ref in args.refs:
-            done = install(reg, reg.resolve(ref), root)
-            _report(done, hint_requirements=args.no_requirements)
-            results.append(done)
+def _install_locked(args, ctx: Context) -> int:
+    """Install exactly what the lock says; install nothing if a registry has it any other way."""
+    if args.refs or args.all or args.source:
+        raise RegistryError("--locked installs what the lock says; name no specs")
+    path = lock_path(args.lockfile)
+    if path is None:
+        raise RegistryError(f"no {LOCK_FILENAME} here; `fanbase lock SPEC...` makes one")
+    lock = load_lock(path)
+    registries = {name: locked_registry(ctx, lock, name) for name in sorted({s.registry for s in lock.specs})}
+    plan, problems = [], []
+    for spec in lock.specs:
+        reg = registries[spec.registry]
+        try:
+            entry = reg.resolve(f"{spec.format}/{spec.kind}")
+        except RegistryError as exc:
+            problems.append(f"{spec}: {exc}")
+            continue
+        try:
+            check_locked(lock, reg, entry, hint=False)
+        except RegistryError as exc:
+            problems.append(str(exc))
+            continue
+        plan.append((reg, entry))
+    if problems:
+        raise RegistryError(
+            f"the registries no longer match {path}:\n  " + "\n  ".join(problems)
+            + "\nread an older release of the registry, or update the lock with `fanbase lock`"
+        )
+    root = Path(args.into) if args.into else install_root()
+    results = [install(reg, entry, root) for reg, entry in plan]
+    for done in results:
+        print(f"{_VERB[done.status]} {_clean(done)}")
+    counts = Counter(_VERB[done.status] for done in results)
+    summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
+    print(f"{len(results)} specs from {path}: {summary} in {root}")
+    _warn_fandango(results)
     _install_requirements(results, args)
     return 0
 
 
-def cmd_update(args, reg: RegistryBase) -> int:
-    if args.refs:
-        entries = [reg.resolve(ref) for ref in args.refs]
-    else:
-        entries = installed_specs(reg)
-        if not entries:
-            print("nothing installed")
-            return 0
-    results = []
-    for entry in entries:
-        done = install(reg, entry)
-        _report(done, hint_requirements=args.no_requirements)
-        results.append(done)
-    _install_requirements(results, args)
-    return 0
-
-
-def cmd_reindex(args, reg: RegistryBase) -> int:
-    assert isinstance(reg, Registry)
-    rows, changed, undescribed = reindex(reg, write=not args.check)
-    index_text = dump_index(rows)
-    index_file = reg.root / INDEX_FILENAME
-    index_stale = not index_file.is_file() or index_file.read_text(encoding="utf-8") != index_text
+def cmd_lock(args, ctx: Context) -> int:
+    path = Path(args.lockfile) if args.lockfile else Path(LOCK_FILENAME)
+    existing = load_lock(path) if path.is_file() else None
+    refs = args.refs or ([str(spec) for spec in existing.requested] if existing else [])
+    if not refs:
+        raise RegistryError("name the specs to lock, e.g. `fanbase lock png`")
+    fresh = build_lock(ctx, refs)
 
     if args.check:
-        # The index repeats the `fanbase` stamp, so compare it the way the metadata is compared.
-        index_stale = index_stale and _index_rows(index_file) != _index_rows_from(index_text)
+        if existing is None:
+            raise RegistryError(f"{path} does not exist; `fanbase lock {' '.join(refs)}` makes it")
+        changes = compare(existing, fresh)
+        if changes:
+            print(f"{path} is out of date:")
+            print("\n".join(changes))
+            print("run `fanbase lock` to update it")
+            return 1
+        print(f"{path} is up to date")
+        return 0
+
+    save_lock(fresh, path)
+    print(f"locked {len(fresh.specs)} specs in {path}")
+    if existing is not None:
+        for line in compare(existing, fresh):
+            print(line)
+    for name, where in sorted(fresh.registries.items()):
+        if moves(where):
+            print(
+                f"warning: the registry {name or 'fanbase'} was read from {_clean(where)}, which changes over time: "
+                "once a spec changes there, the locked one can no longer be fetched. Lock against a release "
+                "instead: --registry https://github.com/fandango-fuzzer/fanbase/tree/<tag>",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def cmd_install(args, ctx: Context) -> int:
+    if args.locked:
+        return _install_locked(args, ctx)
+    if args.all == bool(args.refs):
+        raise RegistryError("name the specs to install, or give --all (not both)")
+    if args.source and not args.all:
+        raise RegistryError("--from goes with --all")
+    root = Path(args.into) if args.into else install_root()
+
+    if args.all:
+        reg = ctx.registry(args.source)
+        results = _install_specs(
+            [(reg, e, ctx) for fmt in reg.formats() for e in reg.kinds(fmt)], root
+        )
+        for done in results:
+            print(f"{_VERB[done.status]} {_clean(done)}")
+        counts = Counter(_VERB[done.status] for done in results)
+        summary = ", ".join(f"{n} {verb}" for verb, n in counts.items())
+        print(f"{len(results)} specs: {summary} in {root}")
+    else:
+        results = _install_specs([(*ctx.resolve(ref), ctx) for ref in args.refs], root)
+        for done in results:
+            _report(done, hint_requirements=args.no_requirements)
+    _warn_fandango(results)
+    _install_requirements(results, args)
+    return 0
+
+
+def cmd_update(args, ctx: Context) -> int:
+    if args.refs:
+        pairs = [ctx.resolve(ref) for ref in args.refs]
+    else:
+        pairs = []
+        for have in all_installed():
+            reg = ctx.registry(have.registry or None)
+            try:
+                pairs.append((reg, reg.resolve(f"{have.format}/{have.kind}")))
+            except RegistryError:
+                print(f"warning: {_clean(have)} is no longer in its registry; kept", file=sys.stderr)
+        if not pairs:
+            print("nothing installed" if not all_installed() else "nothing to update")
+            return 0
+    results = _install_specs([(reg, entry, ctx) for reg, entry in pairs])
+    for done in results:
+        _report(done, hint_requirements=args.no_requirements)
+    _warn_fandango(results)
+    _install_requirements(results, args)
+    return 0
+
+
+def cmd_uninstall(args, ctx: Context) -> int:
+    for done in uninstall(args.refs, force=args.force):
+        print(f"removed {_clean(done)} ({done.path})")
+    return 0
+
+
+def _node(reg, entry) -> str:
+    version = entry.meta.get("version")
+    return _clean(label(reg, entry) + (f"  {version}" if version else ""))
+
+
+def cmd_deps(args, ctx: Context) -> int:
+    """What a spec extends, as a tree; with --reverse, what extends it."""
+    reg, entry = ctx.resolve(args.ref)
+
+    def forward(reg, entry):
+        for dep in dependencies(entry, reg.name, self_names(reg)):
+            try:
+                dep_reg = ctx.registry(dep.registry or None)
+                yield dep_reg, dep_reg.resolve(dep.ref), None
+            except RegistryError as exc:
+                yield None, None, f"{dep}  (cannot be found: {exc})"
+
+    def reverse(reg, entry):
+        for other, found in dependents(ctx, reg, entry):
+            yield other, found, None
+
+    children = reverse if args.reverse else forward
+
+    def walk(reg, entry, prefix: str, trail: tuple) -> None:
+        kids = list(children(reg, entry))
+        for i, (kid_reg, kid, problem) in enumerate(kids):
+            branch = "└── " if i == len(kids) - 1 else "├── "
+            if problem:
+                print(prefix + branch + _clean(problem))
+                continue
+            key = (kid_reg.name, kid.format, kid.kind)
+            circular = key in trail
+            print(prefix + branch + _node(kid_reg, kid) + ("  (circular)" if circular else ""))
+            if not circular:
+                walk(kid_reg, kid, prefix + ("    " if i == len(kids) - 1 else "│   "), (*trail, key))
+
+    print(_node(reg, entry))
+    walk(reg, entry, "", ((reg.name, entry.format, entry.kind),))
+    return 0
+
+
+def _confirm_trust(args, name: str, where: str) -> None:
+    print(f"Adding the registry {name} ({_clean(where)}).")
+    print(
+        "Its specs are Python code that runs inside Fandango with your permissions, and may\n"
+        "ask for Python packages to be installed. Add only registries you trust."
+    )
+    if args.trust:
+        return
+    if not sys.stdin.isatty():
+        raise RegistryError("not adding it without your confirmation; pass --trust to give it")
+    if input("Trust it? [y/N] ").strip().lower() not in ("y", "yes"):
+        raise RegistryError("not added")
+
+
+def cmd_registry_add(args, ctx: Context) -> int:
+    location = args.url
+    token = None
+    if args.token_env is not None:
+        check_token_env(args.token_env)
+        token = RegistryConfig("probe", location, args.token_env).token()
+        if token is None:
+            print(f"note: ${args.token_env} is not set here", file=sys.stderr)
+    signers: list[Key] = [k for given in args.signer or [] for k in read_keys(given)]
+    opened: RegistryBase
+    if location.startswith(("http://", "https://")):
+        opened = RemoteRegistry(location, token, tuple(signers))  # (refused here if the index is not signed by one of them)
+    else:
+        if signers:
+            raise RegistryError("--signer is for a registry read over the network: a checkout on this machine is yours")
+        path = Path(location).expanduser()
+        opened = Registry(path)
+        location = str(path.resolve())
+    chosen = args.name if args.name is not None else opened.info.get("name")
+    if chosen is None:
+        raise RegistryError("the registry does not say what it is called; give it a name with --name")
+    name = check_registry_name(chosen)
+    existing = ctx.config.registries.get(name)
+    if existing and existing.url == location and tuple(k.text for k in signers) == existing.signers:
+        print(f"{name} is already added")
+        return 0
+    if existing:
+        raise RegistryError(f"{name} is already added, as {existing.url}; remove it first")
+    if (declared := opened.info.get("name")) and declared != name:
+        print(
+            f"note: the registry calls itself {declared}; its specs include each other as "
+            f"{declared}/..., which only works under that name",
+            file=sys.stderr,
+        )
+    _confirm_trust(args, name, location)
+    ctx.config.registries[name] = RegistryConfig(name, location, args.token_env, tuple(k.text for k in signers))
+    path = save_config(ctx.config)
+    signed = getattr(opened, "signed_by", None)
+    print(f"added {name}: {len(opened.formats())} formats ({path})" + (f"; its index is signed by {signed.fingerprint}" if signed else ""))
+    return 0
+
+
+def cmd_registry_remove(args, ctx: Context) -> int:
+    if args.name not in ctx.config.registries:
+        raise RegistryError(f"no registry called {args.name!r}")
+    mine = [done for done in all_installed() if done.registry == args.name]
+    if args.uninstall and mine:
+        uninstall([str(done) for done in mine])
+        print(f"removed {len(mine)} installed specs of {args.name}")
+        mine = []
+    del ctx.config.registries[args.name]
+    dropped = [ref for ref, target in ctx.config.pins.items() if split_registry(target)[0] == args.name]
+    for ref in dropped:
+        del ctx.config.pins[ref]
+    save_config(ctx.config)
+    print(f"removed the registry {args.name}")
+    if dropped:
+        print(f"unpinned {', '.join(dropped)}")
+    if mine:
+        print(f"{len(mine)} installed specs of {args.name} are still there; "
+              f"`fanbase uninstall {mine[0]}` removes one, or remove them all with --uninstall next time")
+    return 0
+
+
+def cmd_registry_list(args, ctx: Context) -> int:
+    from fanbase.signing import DEFAULT_SIGNERS, parse_key
+
+    default_keys = [parse_key(k).fingerprint for k in DEFAULT_SIGNERS]
+    rows = [("fanbase", str(locate_registry(args.registry, local=False)),
+             "default" + (f"; its releases are signed by {' or '.join(default_keys)}" if default_keys else ""))]
+    rows += [(reg.name, reg.url, f"signed by {' or '.join(parse_key(k).fingerprint for k in reg.signers)}" if reg.signers else "")
+             for reg in sorted(ctx.config.registries.values(), key=lambda r: r.name)]
+    width = max(len(name) for name, _, _ in rows)
+    for name, where, note in rows:
+        print(_clean(f"  {name:<{width}}  {where}" + (f"  ({note})" if note else "")))
+    return 0
+
+
+def cmd_pin(args, ctx: Context) -> int:
+    if not args.ref and not args.target:
+        if not ctx.config.pins:
+            print("nothing pinned")
+        for ref, target in sorted(ctx.config.pins.items()):
+            print(_clean(f"  {ref} -> {target}"))
+        return 0
+    if not args.target:
+        raise RegistryError("pin what to what? e.g. `fanbase pin png acme:png/png-strict`")
+    if split_registry(args.ref)[0]:
+        raise RegistryError(f"{args.ref} already names a registry; pin a plain name such as png")
+    name, _ = split_registry(args.target)
+    if not name:
+        raise RegistryError(f"pin {args.ref} to a spec of a registry you added, as name:spec")
+    if not args.no_check:
+        ctx.registry(name).resolve(split_registry(args.target)[1])
+    ctx.config.pins[args.ref.strip()] = args.target.strip()
+    save_config(ctx.config)
+    print(f"{args.ref} now means {args.target}")
+    return 0
+
+
+def cmd_unpin(args, ctx: Context) -> int:
+    if args.ref not in ctx.config.pins:
+        raise RegistryError(f"{args.ref} is not pinned")
+    del ctx.config.pins[args.ref]
+    save_config(ctx.config)
+    print(f"{args.ref} is no longer pinned")
+    return 0
+
+
+def cmd_reindex(args, ctx: Context) -> int:
+    reg = ctx.default
+    assert isinstance(reg, Registry)
+    rows, changed, undescribed = reindex(reg, write=not args.check)
+    index_text = dump_index(rows, reg.info)
+    index_file = reg.root / INDEX_FILENAME
+
+    if args.check:
+        index_stale = index_is_stale(reg, rows)
         stale = [str(e) for e in changed]
         if stale:
             print("metadata.yml out of date: " + ", ".join(stale))
@@ -159,15 +535,6 @@ def cmd_reindex(args, reg: RegistryBase) -> int:
     return 0
 
 
-def _index_rows_from(text: str) -> list[dict]:
-    rows = (yaml.safe_load(text) or {}).get("specs", [])
-    return [{k: v for k, v in row.items() if k != "fanbase"} for row in rows]
-
-
-def _index_rows(path) -> list[dict]:
-    return _index_rows_from(path.read_text(encoding="utf-8")) if path.is_file() else []
-
-
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="fanbase", description=__doc__)
     ap.add_argument("--version", action="version", version=f"fanbase {__version__}")
@@ -175,25 +542,258 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list", help="list formats, or the specs of one format")
-    p.add_argument("format", nargs="?", help="e.g. png")
+    p.add_argument("format", nargs="?", help="e.g. png; acme: or acme:png for a registry you added")
+    p.add_argument("--installed", action="store_true", help="list what is installed; asks no registry")
+    p.add_argument("--quality", nargs="?", const="auto", metavar="FILE|URL", help="also how well each spec does (parsers accept, coverage, speed), from the registry's results or from FILE or URL")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("show", help="show a spec's metadata")
-    p.add_argument("ref", help="e.g. png, or png/png-apng")
+    p.add_argument("ref", help="e.g. png, png/png-apng, or acme:png-strict")
+    p.add_argument("--quality", nargs="?", const="auto", metavar="FILE|URL", help="also how well it does, from the registry's results or from FILE or URL")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
     p.set_defaults(fn=cmd_show)
 
+    p = sub.add_parser("search", help="find specs by what their name, title, description, extension or type say")
+    p.add_argument("words", nargs="*", metavar="word", help="every word has to match")
+    p.add_argument("--extension", metavar="EXT", help="only specs for this file name extension, e.g. png")
+    p.add_argument("--all", action="store_true", help="also search the registries you added")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
+    p.set_defaults(fn=cmd_search)
+
+    p = sub.add_parser("outdated", help="the installed specs that a registry has a different version of")
+    p.add_argument("--check", action="store_true", help="exit 1 if there are any")
+    p.add_argument("--json", action="store_true", help="as JSON, for scripts")
+    p.set_defaults(fn=cmd_outdated)
+
+    p = sub.add_parser("diff", help="installed against the registry's copy of a spec; or two specs against each other")
+    p.add_argument("refs", nargs="+", metavar="ref", help="one spec, or two")
+    p.set_defaults(fn=cmd_diff)
+
+    p = sub.add_parser("cite", help="how to cite a spec")
+    p.add_argument("ref", help="e.g. png")
+    p.add_argument("--bibtex", action="store_true", help="as a BibTeX entry")
+    p.add_argument("--json", action="store_true", help="as JSON")
+    p.set_defaults(fn=cmd_cite)
+
     p = sub.add_parser("install", help="copy specs into Fandango's include path")
-    p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, or png/png-apng")
+    p.add_argument("refs", nargs="*", metavar="ref", help="e.g. png, png/png-apng, or acme:png-strict")
     p.add_argument("--all", action="store_true", help="install every spec in the registry")
+    p.add_argument("--from", dest="source", metavar="NAME", help="with --all: a registry you added, instead of the default")
     p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs need")
     p.add_argument("--into", help="install directory (default: Fandango's data dir)")
+    p.add_argument("--locked", action="store_true", help=f"install exactly what {LOCK_FILENAME} says, or nothing")
+    p.add_argument("--lockfile", metavar="FILE", help=f"the lock to use (default: $FANBASE_LOCK, else ./{LOCK_FILENAME})")
     p.set_defaults(fn=cmd_install)
+
+    p = sub.add_parser("lock", help=f"write {LOCK_FILENAME}: exactly which specs this project uses")
+    p.add_argument("refs", nargs="*", metavar="ref", help="the specs to lock (default: those already in the lock)")
+    p.add_argument("--lockfile", metavar="FILE", help=f"where to write it (default: ./{LOCK_FILENAME})")
+    p.add_argument("--check", action="store_true", help="only say whether the lock is still what the registries have; exit 1 if not")
+    p.set_defaults(fn=cmd_lock)
 
     p = sub.add_parser("update", help="bring installed specs up to date")
     p.add_argument("refs", nargs="*", metavar="ref", help="specs to update (default: all installed)")
     p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs need")
     p.set_defaults(all=False)
     p.set_defaults(fn=cmd_update)
+
+    p = sub.add_parser("uninstall", help="remove installed specs")
+    p.add_argument("refs", nargs="+", metavar="ref", help="e.g. png, png/png-apng, or acme:png-strict")
+    p.add_argument("--force", action="store_true", help="remove a spec even if an installed spec extends it")
+    p.set_defaults(fn=cmd_uninstall)
+
+    p = sub.add_parser("deps", help="show what a spec extends, or with --reverse what extends it")
+    p.add_argument("ref", help="e.g. png-apng")
+    p.add_argument("--reverse", action="store_true", help="the specs that extend it, instead")
+    p.set_defaults(fn=cmd_deps)
+
+    p = sub.add_parser("registry", help="the registries you use besides the default one")
+    reg_sub = p.add_subparsers(dest="registry_command", required=True)
+    q = reg_sub.add_parser("add", help="add a registry: a URL, or the path of a local checkout")
+    q.add_argument("url")
+    q.add_argument("--name", help="what to call it (default: the name the registry gives itself)")
+    q.add_argument("--token-env", metavar="VAR", help="the environment variable that holds a token, for a private registry")
+    q.add_argument("--trust", action="store_true", help="do not ask whether you trust it")
+    q.add_argument("--signer", action="append", metavar="KEY", help="a public key (or a .pub file) that its index has to be signed by, from now on; may be repeated")
+    q.set_defaults(fn=cmd_registry_add)
+    q = reg_sub.add_parser("remove", help="forget a registry")
+    q.add_argument("name")
+    q.add_argument("--uninstall", action="store_true", help="also remove the specs installed from it")
+    q.set_defaults(fn=cmd_registry_remove)
+    q = reg_sub.add_parser("list", help="the default registry and the ones you added")
+    q.set_defaults(fn=cmd_registry_list)
+
+    p = sub.add_parser("pin", help="make a plain name mean a spec of a registry you added; with no arguments, list the pins")
+    p.add_argument("ref", nargs="?", help="a plain name, e.g. png")
+    p.add_argument("target", nargs="?", help="e.g. acme:png/png-strict")
+    p.add_argument("--no-check", action="store_true", help="do not look the target up first")
+    p.set_defaults(fn=cmd_pin)
+
+    p = sub.add_parser("unpin", help="undo a pin")
+    p.add_argument("ref")
+    p.set_defaults(fn=cmd_unpin)
+
+    p = sub.add_parser("new", help="start a spec in the registry checkout")
+    p.add_argument("ref", help="e.g. png-fancy, or webp/webp for a new format")
+    p.add_argument("--extends", action="append", metavar="SPEC", help="a spec to build on (repeat for several); e.g. png, or 'png>=1.0'")
+    p.add_argument("--description", help="one line")
+    p.set_defaults(fn=cmd_new, local=True)
+
+    p = sub.add_parser("fork", help="copy a spec of any registry into the checkout under a new name")
+    p.add_argument("ref", help="the spec to copy, e.g. png, or acme:png-strict")
+    p.add_argument("--as", dest="name", required=True, metavar="NAME", help="what to call the copy, e.g. png-fancy")
+    p.add_argument("--into", metavar="DIR", help="the registry checkout to put it in (default: the one you are in)")
+    p.add_argument("--with-deps", action="store_true", help="also copy what it extends, which the copy then builds on instead of the originals")
+    p.set_defaults(fn=cmd_fork)
+
+    p = sub.add_parser("rebase", help="bring a fork up to date with the spec it was forked from")
+    p.add_argument("ref", help="the fork, e.g. png-mine")
+    p.add_argument("--upstream", metavar="REGISTRY", help="read the original from here (a URL, or the path of a checkout), instead of where derived_from says")
+    p.add_argument("--base-registry", metavar="REGISTRY", help="a release of the registry from the time of the fork, if it can no longer be found otherwise")
+    p.add_argument("--metadata", choices=("ask", "adopt", "keep"), default="ask",
+                   help="what the original changed in extends, fandango, pip and extensions: adopt it, keep your own, or (default) ask if you are at a terminal and else only say")
+    p.add_argument("--adopt", metavar="KEYS", help="take the original's current value of these keys (some of extends,fandango,pip,extensions), whatever the fork has")
+    p.add_argument("--dry-run", action="store_true", help="say whether it merges cleanly, and write nothing")
+    p.set_defaults(fn=cmd_rebase, local=True)
+
+    p = sub.add_parser("check", help="is the checkout in order, and does each spec produce inputs?")
+    p.add_argument("refs", nargs="*", metavar="ref", help="the specs to check (default: all)")
+    p.add_argument("--count", type=int, default=3, metavar="N", help="inputs to ask Fandango for from each spec (default 3)")
+    p.add_argument("--timeout", type=int, default=300, metavar="SECONDS", help="per spec (default 300)")
+    p.add_argument("--no-generate", action="store_true", help="do not run Fandango")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import; say which are missing")
+    p.add_argument("--strict", action="store_true", help="a spec with no description, authors or license is a failure")
+    p.add_argument("--base", metavar="REGISTRY", help="a registry (URL or path) to compare with: a changed spec needs a new version")
+    p.add_argument("--changed", action="store_true", help="with --base: ask Fandango only about the specs that differ from it, and what builds on them")
+    p.add_argument("-j", "--jobs", type=int, default=1, metavar="N", help="specs Fandango is asked about at the same time (default 1)")
+    p.set_defaults(fn=cmd_check, local=True)
+
+    p = sub.add_parser("evaluate", help="how do a spec's files do against the parsers of their format?")
+    p.add_argument("refs", nargs="*", metavar="ref", help="the specs to evaluate")
+    p.add_argument("--all", action="store_true", help="every spec of the checkout")
+    p.add_argument("--changed", action="store_true", help="the specs that changed since --base, and what builds on them")
+    p.add_argument("--base", metavar="REGISTRY", help="with --changed: the registry (URL or path) to compare with")
+    p.add_argument("--targets", metavar="A,B", help="only these targets, instead of those the format names")
+    p.add_argument("-n", "--count", type=int, default=100, metavar="N", help="inputs to produce from each spec (default 100)")
+    p.add_argument("--seed", type=int, default=1, metavar="S", help="the random seed, so the same inputs come out each time (default 1)")
+    p.add_argument("--timeout", type=int, default=20, metavar="SECONDS", help="for a target to answer about one file (default 10)")
+    p.add_argument("--budget", type=float, default=60, metavar="SECONDS", help="Fandango's time for the inputs of one spec; when it is up, the inputs made so far are used (default 60; 0: no limit)")
+    p.add_argument("--judge-budget", type=float, default=60, metavar="SECONDS", help="a target's time for the files of one spec; when it is up, the rest are skipped and said so (default 60; 0: no limit)")
+    p.add_argument("--memory", type=int, default=2048, metavar="MB", help="a target may use this much memory (default 2048; enforced on Linux)")
+    p.add_argument("-j", "--jobs", type=int, default=min(4, os.cpu_count() or 1), metavar="N", help="files asked about at the same time")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import")
+    p.add_argument("--hide-crashes", action="store_true", help="count a crash or a hang as a plain error and say nothing about it: for public reports")
+    p.add_argument("--incidents", metavar="DIR", help="write the private record of targets that crash, hang or are killed to DIR (only you can read it)")
+    p.add_argument("--incident-recipients", metavar="FILE", help="with --incidents: encrypt the record with age to the public key(s) in FILE, and never print anything about it; for CI")
+    p.add_argument("--compare-with", metavar="FILE|URL", help="say what changed since earlier results (quality.json, or a report of --json-file); nothing to compare with is only said")
+    p.add_argument("--fail-on-worse", action="store_true", help="with --compare-with: exit 1 if a spec does worse than before on a parser that is the same")
+    p.add_argument("--coverage", action="store_true", help="also measure how much of the library each target that can be measured runs on the files, against real files (needs the image of the registry's coverage/)")
+    p.add_argument("--coverage-only", action="store_true", help="--coverage, and only the targets that can be measured, not the ones the formats name")
+    p.add_argument("--curve", metavar="N,N,...", help="with --coverage: after how many inputs to read the coverage (default 1,10,100,1000, and the last)")
+    p.add_argument("--keep", metavar="DIR", help="keep the inputs in DIR (to look at them locally)")
+    p.add_argument("--strict", action="store_true", help="exit 1 if a spec does not decode as often as it says it should")
+    p.add_argument("--suggest-decodes", action="store_true", help="for a spec that does not say how often its files should decode, say what the best target saw (the authors decide)")
+    p.add_argument("--require-targets", action="store_true", help="exit 1 if a target cannot run here")
+    p.add_argument("--json", action="store_true", help="the report as JSON")
+    p.add_argument("--json-file", metavar="FILE", help="also write the report as JSON to FILE")
+    p.add_argument("--markdown", action="store_true", help="the report as Markdown (for a CI job summary)")
+    p.set_defaults(fn=cmd_evaluate, local=True)
+
+    p = sub.add_parser("targets", help="the targets of the registry checkout, and whether they can run here")
+    p.set_defaults(fn=cmd_targets, local=True)
+
+    p = sub.add_parser("incidents", help="the private record of targets that crashed or hung: open it, or mail it")
+    inc_sub = p.add_subparsers(dest="incidents_command", required=True)
+    q = inc_sub.add_parser("open", help="decrypt a record with your private key and unpack it into a folder only you can read")
+    q.add_argument("bundle", metavar="BUNDLE", help="the encrypted record (evaluation-private.age)")
+    q.add_argument("--identity", required=True, metavar="KEY", help="your age private key (the file age-keygen wrote)")
+    q.add_argument("--into", metavar="DIR", help="the folder to unpack into: new or empty (default: named after the record)")
+    q.set_defaults(fn=cmd_incidents_open)
+    q = inc_sub.add_parser("send", help="mail an encrypted record, from the SMTP settings in FANBASE_SMTP_* (for CI)")
+    q.add_argument("file", metavar="FILE", help="the encrypted record: only a file age made is sent, and at most 20 MB")
+    q.add_argument("--to", required=True, metavar="ADDRESS", help="who to send it to")
+    q.set_defaults(fn=cmd_incidents_send)
+    q = inc_sub.add_parser("list", help="the incidents of an opened record, and where each stands")
+    q.add_argument("folder", metavar="DIR", help="an opened record (`incidents open`), or what `evaluate --incidents` wrote without a key")
+    q.set_defaults(fn=cmd_incidents_list)
+    q = inc_sub.add_parser("show", help="the note to the vendor of one incident")
+    q.add_argument("folder", metavar="DIR")
+    q.add_argument("id", help="an incident's id, or the start of it")
+    q.set_defaults(fn=cmd_incidents_show)
+    q = inc_sub.add_parser("track", help="note what was done about an incident: reported, to whom, fixed; it keeps the 90-day clock")
+    q.add_argument("folder", metavar="DIR")
+    q.add_argument("id", help="an incident's id, or the start of it")
+    q.add_argument("--reported", metavar="DATE", help="when you told the vendor (2026-10-08, or today)")
+    q.add_argument("--vendor", metavar="NAME", help="who it was reported to")
+    q.add_argument("--reference", metavar="TEXT", help="a ticket, an advisory, a CVE: how to find the report again")
+    q.add_argument("--fixed-in", metavar="VERSION", help="the version that fixed it")
+    q.add_argument("--fixed-on", metavar="DATE", help="when that version came out")
+    q.add_argument("--note", metavar="TEXT")
+    q.add_argument("--forget", action="store_true", help="take it out of the tracking, in this record's and in yours")
+    q.add_argument("--no-global", action="store_true", help="note it in this record only, not in your own file of every incident")
+    q.set_defaults(fn=cmd_incidents_track)
+    q = inc_sub.add_parser("tracked", help="every incident you have noted anything about, whichever record it was in, the soonest to be public first")
+    q.add_argument("--within", type=int, metavar="DAYS", help="only those that may be public within this many days (or already may be)")
+    q.set_defaults(fn=cmd_incidents_tracked)
+    q = inc_sub.add_parser("verify", help="run the input an incident kept against the parser as it is now: is it fixed?")
+    q.add_argument("folder", metavar="DIR")
+    q.add_argument("id", help="an incident's id, or the start of it")
+    q.add_argument("--timeout", type=int, default=20, metavar="SECONDS", help="for the parser to answer (default 20)")
+    q.add_argument("--memory", type=int, default=2048, metavar="MB", help="the parser may use this much memory (default 2048; enforced on Linux)")
+    q.set_defaults(fn=cmd_incidents_verify, local=True)
+
+    p = sub.add_parser("quality", help="the results of evaluating the specs, kept for a registry's users")
+    qual_sub = p.add_subparsers(dest="quality_command", required=True)
+    q = qual_sub.add_parser("build", help="make quality.json from the reports of `fanbase evaluate --json-file`")
+    q.add_argument("reports", nargs="+", metavar="REPORT", help="the reports (a run of the parsers and a run of the coverage can be two)")
+    q.add_argument("-o", "--output", default="quality.json", metavar="FILE", help="where to write it (default quality.json; - for the screen)")
+    q.add_argument("--add-to", metavar="FILE|URL", help="start from earlier results: what they say of other specs stays")
+    q.set_defaults(fn=cmd_quality_build)
+
+    p = sub.add_parser("doi", help="a DOI for a spec, from Zenodo, written into its metadata.yml (opt-in; says what it would do, by default)")
+    p.add_argument("ref", help="the spec, e.g. png-apng")
+    p.add_argument("--sandbox", action="store_true", help="do it on sandbox.zenodo.org, to try: its DOIs mean nothing and nothing is written (token in ZENODO_SANDBOX_TOKEN)")
+    p.add_argument("--production", action="store_true", help="publish on zenodo.org, which is for good; asks first (token in ZENODO_TOKEN)")
+    p.add_argument("--new-version", action="store_true", help="the spec has a Zenodo DOI already: make this a new version of that record")
+    p.add_argument("--allow-draft", action="store_true", help="also for a spec whose status is draft")
+    p.add_argument("--yes", action="store_true", help="do not ask first")
+    p.add_argument("--api", metavar="URL", help="another Zenodo (https, or this machine), for tests")
+    p.set_defaults(fn=cmd_doi, local=True)
+
+    p = sub.add_parser("site", help="make a site to browse the registry checkout: its formats and specs, how well they do, how to cite them")
+    p.add_argument("output", metavar="DIR", help="where to write it: a folder that is new, empty, or made by this before")
+    p.add_argument("--quality", nargs="?", const="auto", metavar="FILE|URL", help="also show how well each spec does, from the registry's results or from FILE or URL")
+    p.add_argument("--repo", metavar="URL", help="the registry's repository, for links to the specs there (default: the public registry's, for a registry that has no name)")
+    p.add_argument("--title", help="the site's name (default: Fanbase)")
+    p.set_defaults(fn=cmd_site, local=True)
+
+    p = sub.add_parser("sign", help="maintainers: sign index.yml with your private key (ssh-keygen asks for the passphrase or a touch)")
+    p.add_argument("--key", required=True, metavar="FILE", help="your private key (or the public one, for a key that an agent or a token holds)")
+    p.set_defaults(fn=cmd_sign, local=True)
+
+    p = sub.add_parser("verify", help="is a registry's index signed by a key you trust?")
+    p.add_argument("name", nargs="?", help="a registry you added (default: the one being read)")
+    p.add_argument("--signer", action="append", metavar="KEY", help="a public key (or a .pub file) to check against; may be repeated (default: the ones pinned for the registry)")
+    p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
+    p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")
+    p.add_argument("--markdown", action="store_true", help="as release notes")
+    p.add_argument("--check", action="store_true", help="exit 1 if a changed spec has no new version")
+    p.set_defaults(fn=cmd_changes)
+
+    p = sub.add_parser("publish", help="take your change in the registry checkout to a pull request")
+    p.add_argument("--branch", help="the branch to use (default: a new one named after the change)")
+    p.add_argument("--base-branch", metavar="BRANCH", help="the branch the pull request is against (default: the remote's)")
+    p.add_argument("--message", help="the commit message, and the pull request title")
+    p.add_argument("--count", type=int, default=1, metavar="N", help="inputs to ask Fandango for from each spec (default 1)")
+    p.add_argument("--no-generate", action="store_true", help="do not run Fandango")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import; say which are missing")
+    p.add_argument("--no-pr", action="store_true", help="push the branch, but do not open a pull request")
+    p.add_argument("--dry-run", action="store_true", help="say what would be done, and do nothing")
+    p.add_argument("--yes", action="store_true", help="do not ask first")
+    p.set_defaults(fn=cmd_publish, local=True)
 
     p = sub.add_parser("reindex", help=f"maintainers: refresh metadata.yml files and {INDEX_FILENAME}")
     p.add_argument("--check", action="store_true", help="only report what is out of date; exit 1 if anything is")
@@ -204,9 +804,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.fn(args, find_registry(args.registry, local=getattr(args, "local", False)))
+        # Registries are opened when a command asks for them, so what only looks at what
+        # is installed works without a network.
+        ctx = Context(explicit=args.registry, local=getattr(args, "local", False))
+        return args.fn(args, ctx)
     except RegistryError as exc:
-        print(f"fanbase: {exc}", file=sys.stderr)
+        print(f"fanbase: {_clean(exc)}", file=sys.stderr)
         return 2
 
 

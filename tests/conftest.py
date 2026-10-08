@@ -22,6 +22,39 @@ def write_spec(root: Path, fmt: str, kind: str, text: str, description: str = ""
         )
 
 
+def build_registry(root: Path, specs: dict, name: str | None = None) -> Path:
+    """A registry checkout with an up-to-date index: {(format, kind): metadata}. The text of
+    each spec is its name; a `description` among the metadata is kept apart."""
+    import yaml
+
+    for (fmt, kind), meta in specs.items():
+        meta = dict(meta)
+        write_spec(root, fmt, kind, f"<start> ::= '{kind}'\n", meta.pop("description", kind), **meta)
+    if name:
+        (root / "registry.yml").write_text(yaml.safe_dump({"name": name}))
+    reg = Registry(root)
+    rows, _, _ = reindex(reg)
+    (root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
+    return root
+
+
+def republish(root: Path, kind: str, text: str | None = None, **meta) -> None:
+    """The registry's maintainers change a spec: new text and/or new metadata, then reindex."""
+    import yaml
+
+    fmt = kind.split("-")[0]
+    folder = root / "specs" / fmt / kind
+    if text is not None:
+        (folder / f"{kind}.fan").write_text(text)
+    if meta:
+        data = yaml.safe_load((folder / "metadata.yml").read_text())
+        data.update(meta)
+        (folder / "metadata.yml").write_text(yaml.safe_dump(data))
+    reg = Registry(root)
+    rows, _, _ = reindex(reg)
+    (root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
+
+
 @pytest.fixture
 def registry(tmp_path) -> Path:
     """A small registry checkout with an index.yml."""
@@ -32,6 +65,22 @@ def registry(tmp_path) -> Path:
     reg = Registry(root)
     rows, _, _ = reindex(reg)
     (root / INDEX_FILENAME).write_text(dump_index(rows), encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def acme(tmp_path) -> Path:
+    """A registry of someone else's: it calls itself acme, and has a spec the default one lacks."""
+    import yaml
+
+    root = tmp_path / "acme-registry"
+    write_spec(root, "png", "png-strict", "<start> ::= 'strict'\n", "strict png", extensions=["png"])
+    write_spec(root, "png", "png", "<start> ::= 'acme png'\n", "acme's own png", extensions=["png"])
+    write_spec(root, "bmp", "bmp", "<start> ::= 'bmp'\n", "plain bmp", extensions=["bmp"])
+    (root / "registry.yml").write_text(yaml.safe_dump({"name": "acme", "description": "Acme"}))
+    reg = Registry(root)
+    rows, _, _ = reindex(reg)
+    (root / INDEX_FILENAME).write_text(dump_index(rows, reg.info), encoding="utf-8")
     return root
 
 
@@ -61,3 +110,21 @@ def pip_calls(monkeypatch):
 
     monkeypatch.setattr("fanbase.manager.subprocess.run", fake_run)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def own_config(tmp_path_factory, monkeypatch):
+    """No test reads or writes the config file of whoever runs the tests."""
+    monkeypatch.setenv("FANBASE_CONFIG", str(tmp_path_factory.mktemp("config") / "config.yml"))
+
+
+@pytest.fixture(autouse=True)
+def own_incidents(tmp_path_factory, monkeypatch):
+    """No test reads or writes the file of incidents of whoever runs the tests."""
+    monkeypatch.setenv("FANBASE_INCIDENTS", str(tmp_path_factory.mktemp("incidents") / "incidents.yml"))
+
+
+@pytest.fixture(autouse=True)
+def own_cache(tmp_path_factory, monkeypatch):
+    """No test reads or fills the cache of whoever runs the tests."""
+    monkeypatch.setenv("FANBASE_CACHE", str(tmp_path_factory.mktemp("cache")))

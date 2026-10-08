@@ -20,6 +20,27 @@ import yaml
 
 METADATA_FILENAME = "metadata.yml"
 
+# Optional, in a registry's root: who it is. `reindex` copies it into index.yml, so a client
+# can read it without a checkout. `name` is what the registry is called in refs
+# (`acme:png/png-strict`) and what its specs are installed under (`acme/png/...`).
+REGISTRY_FILENAME = "registry.yml"
+
+# What a registry or a spec may be called, and what a format or kind may be: names that
+# are safe to use as a file name and a URL segment, from a registry we do not control.
+REGISTRY_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# Optional, in a format's folder: what is true of the format whichever spec is meant (its name, file
+# name extensions, media type, specification) and which targets judge its files. A spec's own
+# metadata.yml wins over it.
+FORMAT_FILENAME = "format.yml"
+
+# Where a registry keeps the targets that its specs are evaluated against.
+TARGETS_DIRNAME = "targets"
+
+# The registry the client is configured with by default, which is addressed as `fanbase:`.
+DEFAULT_REGISTRY_NAME = "fanbase"
+
 # png/png-animated · png  (the kind is optional; it defaults to the one named after the format)
 # A bare kind name (png-animated) is resolved by `RegistryBase.resolve`.
 _REF = re.compile(r"^(?P<format>[^/]+)(?:/(?P<kind>[^/]+))?$")
@@ -40,8 +61,9 @@ class Entry:
     format: str
     kind: str
     path: str  # posix path to the .fan file, relative to the registry root
-    meta: dict = field(default_factory=dict, compare=False)
+    meta: dict = field(default_factory=dict, compare=False)  # what is true of the spec: its own words, and its format's
     sha256: str = ""  # only known when the entry came from index.yml
+    own: dict | None = field(default=None, compare=False)  # the spec's metadata.yml alone, where it was read from one
 
     def __str__(self) -> str:
         return f"{self.format}/{self.kind}"
@@ -51,8 +73,43 @@ class Entry:
         return list(self.meta.get("requires") or [])
 
 
+_PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9-]*):(.*)", re.DOTALL)
+
+
+def split_prefix(ref: str) -> tuple[str | None, str]:
+    """`acme:png/png-strict` -> (acme, png/png-strict); `fanbase:png` -> (fanbase, png);
+    `png` -> (None, png). Says what was written, without reading anything into it."""
+    m = _PREFIX.fullmatch(ref.strip())
+    if not m:
+        return None, ref.strip()
+    return m.group(1), m.group(2)
+
+
+def split_registry(ref: str) -> tuple[str | None, str]:
+    """Like `split_prefix`, but `fanbase:png` is the default registry, which is also what a
+    ref with no prefix means: both come back as (None, png)."""
+    name, rest = split_prefix(ref)
+    return (None if name == DEFAULT_REGISTRY_NAME else name), rest
+
+
+def is_safe_name(name: object) -> bool:
+    return isinstance(name, str) and SAFE_NAME.fullmatch(name) is not None
+
+
+def is_safe_path(path: object) -> bool:
+    """A relative posix path that stays inside the registry."""
+    if not isinstance(path, str) or not path or "\\" in path or path.startswith("/"):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/")) and ":" not in path
+
+
 class RegistryBase:
     """Reference resolution, shared by local and remote registries."""
+
+    # "" for the registry the client is configured with by default; for any other, the name
+    # it was added under. It decides where the registry's specs are installed.
+    name: str = ""
+    info: dict = {}  # the registry.yml of the registry, if it has one
 
     def formats(self) -> list[str]:
         raise NotImplementedError
@@ -97,6 +154,7 @@ class Registry(RegistryBase):
         self.specs_dir = self.root / "specs"
         if not self.specs_dir.is_dir():
             raise RegistryError(f"no specs/ directory under {self.root}")
+        self.info = read_registry_info(self.root / REGISTRY_FILENAME)
 
     def formats(self) -> list[str]:
         return sorted(p.name for p in self.specs_dir.iterdir() if p.is_dir() and self._kind_dirs(p))
@@ -110,7 +168,13 @@ class Registry(RegistryBase):
     def entry(self, fmt: str, kind: str) -> Entry:
         folder = self.specs_dir / fmt / kind
         path = (folder / f"{kind}.fan").relative_to(self.root).as_posix()
-        return Entry(fmt, kind, path, read_metadata(folder / METADATA_FILENAME))
+        own = read_metadata(folder / METADATA_FILENAME)
+        return Entry(fmt, kind, path, {**self.format_info(fmt), **own}, own=own)
+
+    def format_info(self, fmt: str) -> dict:
+        """The format.yml of a format; empty if it has none."""
+        path = self.specs_dir / fmt / FORMAT_FILENAME
+        return check_format_info(read_metadata(path), str(path))
 
     def read(self, entry: Entry) -> bytes:
         return (self.root / entry.path).read_bytes()
@@ -132,3 +196,52 @@ def read_metadata(path: Path) -> dict:
     if not isinstance(data, dict):
         raise RegistryError(f"{path}: expected a mapping at the top level")
     return data
+
+
+def check_registry_info(info: object, where: str) -> dict:
+    """The `registry:` block of an index, or a registry.yml: a mapping with a usable name."""
+    if info is None:
+        return {}
+    if not isinstance(info, dict):
+        raise RegistryError(f"{where}: expected a mapping")
+    name = info.get("name")
+    if name is not None and not (isinstance(name, str) and REGISTRY_NAME.fullmatch(name)):
+        raise RegistryError(
+            f"{where}: registry name {name!r} must be lower case letters, digits and "
+            "dashes, starting with a letter"
+        )
+    if name == DEFAULT_REGISTRY_NAME:
+        raise RegistryError(f"{where}: the name {DEFAULT_REGISTRY_NAME!r} is the default registry's")
+    quality = info.get("quality")
+    if quality is not None and not (isinstance(quality, str) and quality.strip()):
+        raise RegistryError(f"{where}: quality is where the registry keeps the results of evaluating its specs: a URL or a path")
+    return dict(info)
+
+
+def read_registry_info(path: Path) -> dict:
+    """A registry.yml; empty if there is none."""
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise RegistryError(f"{path}: invalid YAML: {exc}") from None
+    return check_registry_info(data, str(path))
+
+
+def check_format_info(info: dict, where: str) -> dict:
+    """A format.yml: texts for title, mime and reference, file name extensions, and the names of targets."""
+    for key in ("title", "mime", "reference"):
+        if key in info and not (isinstance(info[key], str) and info[key].strip()):
+            raise RegistryError(f"{where}: {key} has to be text")
+    extensions = info.get("extensions")
+    if extensions is not None and not (
+        isinstance(extensions, list) and extensions and all(isinstance(e, str) and e.strip() for e in extensions)
+    ):
+        raise RegistryError(f"{where}: extensions has to be a list of file name extensions")
+    targets = info.get("targets")
+    if targets is not None and not (
+        isinstance(targets, list) and all(is_safe_name(t) for t in targets) and len(set(targets)) == len(targets)
+    ):
+        raise RegistryError(f"{where}: targets has to be a list of target names, each once")
+    return info
