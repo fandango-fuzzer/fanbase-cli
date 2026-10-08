@@ -23,6 +23,7 @@ from fanbase.deps import closure, dependencies, dependents, label, self_names
 from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
 from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.evaluate import cmd_evaluate, cmd_targets
+from fanbase.incident_cmds import cmd_incidents_open, cmd_incidents_send
 from fanbase.manager import (
     FandangoMismatch,
     Installed,
@@ -646,6 +647,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("targets", help="the targets of the registry checkout, and whether they can run here")
     p.set_defaults(fn=cmd_targets, local=True)
+
+    p = sub.add_parser("incidents", help="the private record of targets that crashed or hung: open it, or mail it")
+    inc_sub = p.add_subparsers(dest="incidents_command", required=True)
+    q = inc_sub.add_parser("open", help="decrypt a record with your private key and unpack it into a folder only you can read")
+    q.add_argument("bundle", metavar="BUNDLE", help="the encrypted record (evaluation-private.age)")
+    q.add_argument("--identity", required=True, metavar="KEY", help="your age private key (the file age-keygen wrote)")
+    q.add_argument("--into", metavar="DIR", help="the folder to unpack into: new or empty (default: named after the record)")
+    q.set_defaults(fn=cmd_incidents_open)
+    q = inc_sub.add_parser("send", help="mail an encrypted record, from the SMTP settings in FANBASE_SMTP_* (for CI)")
+    q.add_argument("file", metavar="FILE", help="the encrypted record: only a file age made is sent, and at most 20 MB")
+    q.add_argument("--to", required=True, metavar="ADDRESS", help="who to send it to")
+    q.set_defaults(fn=cmd_incidents_send)
 
     p = sub.add_parser("changes", help="what differs from another registry: added, changed and removed specs")
     p.add_argument("--base", required=True, metavar="REGISTRY", help="the registry to compare with: a URL (e.g. an earlier release), or a path")

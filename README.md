@@ -310,6 +310,53 @@ are that concrete inputs and unfixed vulnerabilities are not published. A crash 
 what you run locally. With `--hide-crashes`, which CI uses for anything public, it is counted as a plain error and
 nothing about it is kept, and no input is ever saved unless you ask with `--keep DIR` (which does not go with it).
 
+### The private record of crashes and hangs
+
+Hiding a crash from a public report is not the same as losing it: whoever runs the evaluation is the one who has to
+report the bug. So `evaluate` can write the details down, for you alone:
+
+```bash
+fanbase evaluate --all --incidents ~/fanbase-private                  # on your machine
+fanbase evaluate --all --hide-crashes --incidents DIR --incident-recipients recipients.txt     # in CI
+```
+
+- **What is in it.** For each cause (a bug found forty times is one entry): the input (three examples), the command
+  with the file as `INPUT`, how it ended (the signal), what the target said, whether it happened again when tried
+  once more (a hang can be a busy machine), the target's version, and what is needed to make the file again: the
+  spec's version and hash, the Fandango and Fanbase versions, the seed. And a note to the vendor to start from, with a
+  checklist: report it privately, write down the date, a usual 90 days to a fix.
+- **On your machine** (`--incidents DIR`) it is a folder only you can read (modes 0700 and 0600), written only if
+  something broke.
+- **In CI** (`--incident-recipients FILE`) it is one file, `evaluation-private.age`, encrypted with
+  [age](https://age-encryption.org) to the public key(s) in `FILE`, which makes it safe in a public artifact and
+  needs no secret to make. It is padded to whole megabytes and written on every run, whether or not anything broke,
+  so that its existence and its size say nothing. Nothing about it is printed, and what is public still counts a
+  crash or a hang as a plain error. If `age` or the key is missing, the run is refused before it starts.
+- **Make a key once**, on your machine: `age-keygen -o fanbase.key` writes the private key (keep it to yourself) and
+  prints the public key, `age1...`, which goes in `recipients.txt`. Fanbase never sees the private key.
+
+```bash
+fanbase incidents open evaluation-private.age --identity fanbase.key --into opened    # decrypt and unpack
+fanbase incidents send evaluation-private.age --to you@example.org                   # mail it (for CI)
+```
+
+`open` unpacks only plain files with plain names into a folder that is new or empty (never into one with something
+in it, and never anywhere else), and makes it readable by you alone. Start with its `REPORT.md`.
+
+`send` mails the encrypted file and nothing else, and refuses anything that does not start with the `age` header, or
+is over 20 MB (a mail server may refuse less: keep the artifact as the copy that is always there). The body says the
+same thing whatever the file holds. The server comes from the environment, so the secrets stay out of any file:
+
+| Variable | |
+|---|---|
+| `FANBASE_SMTP_HOST` | the mail server |
+| `FANBASE_SMTP_PORT` | `465` (the default): TLS from the first byte; another port, such as `587`, must upgrade with STARTTLS or nothing is sent |
+| `FANBASE_SMTP_USER`, `FANBASE_SMTP_PASSWORD` | the login, if the server wants one (both or neither); only sent over TLS |
+| `FANBASE_SMTP_FROM` | the sender (default: the user, if that is an address) |
+
+Certificates are checked. Errors say what kind of failure it was and nothing else: no host, address or password
+is ever printed, since the output of a CI job is public.
+
 ## Registries besides the public one
 
 The public registry is the default, and the only one a plain name such as `png` can ever

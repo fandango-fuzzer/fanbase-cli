@@ -1,6 +1,7 @@
 """Fakes and builders shared by the tests of evaluate and of the private record."""
 
 import subprocess
+from pathlib import Path
 
 import yaml
 
@@ -68,3 +69,28 @@ def settle(reg):
         assert main(["--registry", str(reg), "reindex"]) == 0
 
 
+
+
+class FakeAge:
+    """Stands in for `age`: writes what it is asked to encrypt behind a header, and reads it back."""
+
+    HEADER = b"FAKE-AGE\n"
+
+    def __init__(self, fail=False):
+        self.fail, self.plaintexts, self.calls = fail, [], []
+
+    def __call__(self, cmd, **kwargs):
+        if cmd[0] != "age":
+            return REAL_RUN(cmd, **kwargs)
+        self.calls.append(cmd)
+        if self.fail:
+            return subprocess.CompletedProcess(cmd, 1, b"", b"age: no such recipient")
+        if "-d" in cmd:
+            data = Path(cmd[-1]).read_bytes()
+            if not data.startswith(self.HEADER):
+                return subprocess.CompletedProcess(cmd, 1, b"", b"age: error: failed to read header")
+            return subprocess.CompletedProcess(cmd, 0, data[len(self.HEADER):], b"")
+        data = kwargs.get("input", b"")
+        self.plaintexts.append(data)
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(self.HEADER + data)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")

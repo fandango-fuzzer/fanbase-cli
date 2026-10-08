@@ -4,12 +4,11 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
 
 import pytest
 import yaml
 from conftest import build_registry
-from helpers import REAL_RUN, STRICT, FakeFandango, settle, target
+from helpers import REAL_RUN, STRICT, FakeAge, FakeFandango, settle, target
 
 from fanbase import contrib, incidents
 from fanbase.cli import main
@@ -32,24 +31,6 @@ def run(capsys, *argv):
     code = main(list(argv))
     out = capsys.readouterr()
     return code, out.out, out.err
-
-
-class FakeAge:
-    """Stands in for `age`: keeps what it was asked to encrypt, and writes it behind a header."""
-
-    def __init__(self, fail=False):
-        self.fail, self.plaintexts, self.calls = fail, [], []
-
-    def __call__(self, cmd, **kwargs):
-        if cmd[0] != "age":
-            return REAL_RUN(cmd, **kwargs)
-        self.calls.append(cmd)
-        if self.fail:
-            return subprocess.CompletedProcess(cmd, 1, b"", b"age: no such recipient")
-        data = kwargs.get("input", b"")
-        self.plaintexts.append(data)
-        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"FAKE-AGE\n" + data)
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
 
 @pytest.fixture
