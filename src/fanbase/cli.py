@@ -687,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--incidents", metavar="DIR", help="write the private record of targets that crash, hang or are killed to DIR (only you can read it)")
     p.add_argument("--incident-recipients", metavar="FILE", help="with --incidents: encrypt the record with age to the public key(s) in FILE, and never print anything about it; for CI")
     p.add_argument("--compare-with", metavar="FILE|URL", help="say what changed since earlier results (quality.json, or a report of --json-file); nothing to compare with is only said")
+    p.add_argument("--reuse", metavar="FILE|URL", help="earlier results (quality.json): a spec that nothing it depends on has changed since is not evaluated again, and its earlier result is kept; a different seed or count counts as a change, so use one seed. Leave it out for a full evaluation")
     p.add_argument("--fail-on-worse", action="store_true", help="with --compare-with: exit 1 if a spec does worse than before on a parser that is the same")
     p.add_argument("--coverage", action="store_true", help="also measure how much of the library each target that can be measured runs on the files, against real files (needs the image of the registry's coverage/)")
     p.add_argument("--coverage-only", action="store_true", help="--coverage, and only the targets that can be measured, not the ones the formats name")
