@@ -546,9 +546,20 @@ FIRST_BATCH = 5  # inputs asked for first, within a budget: few, so that a slow 
 GRACE = 10  # seconds a batch that began in time may overrun the budget
 
 
-def _fuzz(fandango: str, spec: Path, n: int, out: Path, library: Path, seed: int | None, timeout: float):
-    """One run of `fandango fuzz`; None if it did not finish in time."""
+def _extension(entry: Entry) -> str | None:
+    """The file name extension of a spec's files, as `fandango fuzz -x` takes it (".png"), from its metadata; None if it has none."""
+    extensions = entry.meta.get("extensions")
+    first = str(extensions[0]).lstrip(".") if isinstance(extensions, list) and extensions else ""
+    return f".{first}" if first else None
+
+
+def _fuzz(fandango: str, spec: Path, n: int, out: Path, library: Path, seed: int | None, timeout: float,
+          extension: str | None = None):
+    """One run of `fandango fuzz`; None if it did not finish in time. The files get the extension of the format, as
+    `fandango -F` gives them: a parser that goes by the name of a file must see the name it would see in use."""
     cmd = [fandango, "fuzz", "-f", str(spec), "-n", str(n), "-d", str(out)]
+    if extension:
+        cmd += ["-x", extension]
     env = {**os.environ, "FANDANGO_PATH": str(library)}
     if seed is not None:
         cmd += ["--random-seed", str(seed)]
@@ -578,14 +589,14 @@ def produce(reg: Registry, entry: Entry, ctx: Context, *, count: int, timeout: i
 
     if budget is None:
         started = time.monotonic()
-        done = _fuzz(fandango, spec, count, out, library, seed, timeout)
+        done = _fuzz(fandango, spec, count, out, library, seed, timeout, _extension(entry))
         if done is None:
             return Produced([], time.monotonic() - started, tmp, error=f"fandango did not finish in {timeout} seconds")
         files = sorted(p for p in out.glob("*") if p.is_file()) if out.is_dir() else []
         produced = Produced(files, time.monotonic() - started, tmp, returncode=done.returncode,
                             tail=" | ".join((done.stderr or done.stdout).strip().splitlines()[-2:]))
     else:
-        produced = _produce_within(fandango, spec, count, out, library, seed, budget, tmp)
+        produced = _produce_within(fandango, spec, count, out, library, seed, budget, tmp, _extension(entry))
 
     if not produced.files:
         produced.error = produced.error or "fandango produced no files"
@@ -595,7 +606,7 @@ def produce(reg: Registry, entry: Entry, ctx: Context, *, count: int, timeout: i
 
 
 def _produce_within(fandango: str, spec: Path, count: int, out: Path, library: Path, seed: int | None,
-                    budget: float, tmp: Path) -> Produced:
+                    budget: float, tmp: Path, extension: str | None = None) -> Produced:
     import hashlib
 
     started = time.monotonic()
@@ -609,7 +620,7 @@ def _produce_within(fandango: str, spec: Path, count: int, out: Path, library: P
             stopped = f"the budget of {budget:g}s ran out with {len(files)} of the {count} inputs"
             break
         folder = out / f"batch-{batch}"
-        done = _fuzz(fandango, spec, wanted, folder, library, None if seed is None else seed + batch, left + GRACE)
+        done = _fuzz(fandango, spec, wanted, folder, library, None if seed is None else seed + batch, left + GRACE, extension)
         if done is None:
             stopped = f"the budget of {budget:g}s ran out with {len(files)} of the {count} inputs"
             break

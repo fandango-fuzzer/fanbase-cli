@@ -272,7 +272,7 @@ def test_list_shows_how_each_spec_does(capsys, reg, results):
     code, out, _ = run(capsys, "--registry", str(reg), "list", "png", "--quality", str(results))
     assert code == 0
     assert "PNG [accepts 100%, 16/s]" in out
-    assert "Animated [accepts 50%, 3/s (for an earlier version)]" in out  # not measured on the spec as it is
+    assert "Animated [accepts 50%, 3.0/s (for an earlier version)]" in out  # not measured on the spec as it is
 
 
 def test_list_in_json(capsys, reg, results):

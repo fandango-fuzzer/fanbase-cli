@@ -256,7 +256,7 @@ def _rows(r: SpecReport) -> list[list[str]]:
             continue
         res = t.result
         rows.append([t.name, f"{res.accepted}/{res.total}"] + [str(res.counts[c]) for c in _COLUMNS[1:]]
-                    + [f"{res.per_second:.0f}", clean(t.version or "")])
+                    + [quality_results.speed(res.per_second), clean(t.version or "")])
     return rows
 
 
@@ -295,7 +295,7 @@ def as_text(reports: list[SpecReport], args) -> str:
         if r.error:
             out += [f"{head}: no inputs: {clean(r.error)}", ""]
             continue
-        out.append(f"{head}: {r.produced} inputs from seed {args.seed} in {r.seconds:.1f}s ({r.per_second:.1f}/s)")
+        out.append(f"{head}: {r.produced} inputs from seed {args.seed} in {r.seconds:.1f}s ({quality_results.speed(r.per_second)}/s)")
         if r.note:
             out.append(f"  note: {clean(r.note)}")
         if r.unjudged:
@@ -332,7 +332,7 @@ def as_markdown(reports: list[SpecReport], args) -> str:
         if r.error:
             out += [f"**No inputs:** {clean(r.error)}", ""]
             continue
-        out.append(f"{r.produced} inputs in {r.seconds:.1f}s ({r.per_second:.1f}/s)." + (f" {clean(r.note)}." if r.note else ""))
+        out.append(f"{r.produced} inputs in {r.seconds:.1f}s ({quality_results.speed(r.per_second)}/s)." + (f" {clean(r.note)}." if r.note else ""))
         out.append("")
         if r.unjudged:
             out += [f"_{r.unjudged}_", ""]
