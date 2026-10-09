@@ -52,6 +52,23 @@ fanbase install png-apng      # copy it where Fandango's include() finds it
 
 `fanbase --help` lists every command, and `fanbase COMMAND --help` its options.
 
+## Citing
+
+fanbase-cli is archived on Zenodo. The DOI [10.5281/zenodo.23259520](https://doi.org/10.5281/zenodo.23259520) stands for the software
+as a whole and always leads to the latest version; each release has a DOI of its own, on that page.
+
+```bibtex
+@software{fanbase_cli,
+  author  = {Zamudio Amaya, Jos{\'e} Antonio},
+  title   = {fanbase-cli: the command-line client for the Fanbase registry of Fandango input specifications},
+  doi     = {10.5281/zenodo.23259520},
+  url     = {https://doi.org/10.5281/zenodo.23259520},
+  license = {Apache-2.0}
+}
+```
+
+The registry with the specs, [`fanbase`](https://github.com/fandango-fuzzer/fanbase), is archived separately.
+
 ## License
 
 Apache-2.0, see [LICENSE](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/LICENSE).
