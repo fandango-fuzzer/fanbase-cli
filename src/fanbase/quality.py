@@ -207,6 +207,11 @@ def of(doc: dict, entry: Entry, sha256: str) -> tuple[dict, bool] | None:
     return None if row is None else (row, row["sha256"] == sha256)
 
 
+def speed(per_second: float) -> str:
+    """Files per second in few digits: 41, 1.3, 0.05. A slow spec must not read as 0."""
+    return f"{per_second:.0f}" if per_second >= 10 else f"{per_second:.1f}" if per_second >= 1 else f"{per_second:.2f}"
+
+
 def summary(row: dict, current: bool = True) -> str:
     """A spec's quality in a few words."""
     parts = []
@@ -216,7 +221,7 @@ def summary(row: dict, current: bool = True) -> str:
     if lines:
         parts.append(f"covers {max(lines):.1%}")
     if row.get("per_second"):
-        parts.append(f"{row['per_second']:.0f}/s")
+        parts.append(f"{speed(row['per_second'])}/s")
     text = ", ".join(parts) or "measured"
     return text if current else f"{text} (for an earlier version)"
 
