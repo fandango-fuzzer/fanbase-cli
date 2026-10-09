@@ -80,6 +80,18 @@ def build(reports: list[dict], previous: dict | None = None) -> dict:
             if spec.get("error") or not spec.get("sha256"):
                 continue
             key = spec["spec"]
+            if isinstance(spec.get("reused"), dict) and isinstance(spec["reused"].get("row"), dict) \
+                    and spec["reused"]["row"].get("sha256") == spec["sha256"]:
+                # not evaluated again: what was found before stays, but for what the spec says to expect, which may have changed
+                kept = dict(spec["reused"]["row"])
+                kept["decodes"] = spec.get("decodes")
+                best = kept.get("best_accepted")
+                from fanbase.evaluate import band
+
+                kept["expectation_met"] = band(best) == kept["decodes"] if kept["decodes"] and best is not None else None
+                kept["fingerprint"] = spec.get("fingerprint") or kept.get("fingerprint")
+                specs[key] = kept
+                continue
             current = specs.get(key)
             if current is None or current.get("sha256") != spec["sha256"]:
                 current = specs[key] = {"version": spec.get("version"), "sha256": spec["sha256"], "targets": {}, "coverage": {}}
@@ -87,7 +99,8 @@ def build(reports: list[dict], previous: dict | None = None) -> dict:
             coverages: dict = current["coverage"]
             generated = spec.get("generated") or {}
             current.update(count=generated.get("produced"), seed=report.get("seed"),
-                           per_second=generated.get("per_second"), decodes=spec.get("decodes"))
+                           per_second=generated.get("per_second"), decodes=spec.get("decodes"),
+                           fingerprint=spec.get("fingerprint"))
             for target in spec.get("targets", []):
                 if target.get("status") != "ok" or not target.get("total"):
                     continue
@@ -147,6 +160,7 @@ def parse(data: bytes | str) -> dict:
                      "decodes": spec.get("decodes") if spec.get("decodes") in ("always", "mostly", "rarely", "never") else None,
                      "best_accepted": _ratio(spec.get("best_accepted")),
                      "expectation_met": spec.get("expectation_met") if isinstance(spec.get("expectation_met"), bool) else None,
+                     "fingerprint": spec["fingerprint"] if isinstance(spec.get("fingerprint"), str) and _SHA.fullmatch(spec["fingerprint"]) else None,
                      "targets": {}, "coverage": {}}
         for name, target in (spec.get("targets") or {}).items():
             if is_safe_name(name) and isinstance(target, dict):

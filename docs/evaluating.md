@@ -103,6 +103,40 @@ coverage:
   with gcov, so that CI compiles nothing. The files are run one at a time, in order (the counters are shared), and
   what the verdict pass ran does not count: the counters are cleared first.
 
+## Not evaluating again what has not changed: `--reuse`
+
+With a fixed seed and the same parsers, evaluating a spec again can only give the same result (but for how fast it went, which is
+the machine's). `--reuse` leaves that out:
+
+```bash
+fanbase evaluate --all --seed 1 --coverage --json-file evaluation.json --reuse https://github.com/acme/specs/releases/latest/download/quality.json
+fanbase quality build evaluation.json -o quality.json      # the specs that were not evaluated again keep what was found
+```
+
+Each spec in `quality.json` carries a **fingerprint** of everything its evaluation depended on:
+
+- the spec **and everything it extends** (when `png` changes, so does `png-apng`), by the hash of each file;
+- each **target** that judges it: every file of the target's folder, and the **version** the parser reports (a parser that is
+  upgraded, or that is not installed any more, is a change);
+- **Fandango's** version and **fanbase's**;
+- the settings that change what comes out: the number of inputs, the **seed**, the time Fandango gets, whether coverage is
+  measured and after how many inputs.
+
+A spec whose fingerprint is the same as in the earlier results is not asked of Fandango or of the parsers: its earlier result is
+kept, and the report says so. `decodes` is read from the spec as it is now (it is metadata, not part of the grammar), so a changed
+expectation is checked against the kept result without evaluating anything (`--strict` sees it).
+
+Things to know:
+
+- **Use one seed.** The seed is part of the fingerprint. A seed that changes every week, as in the registry's workflows until now,
+  makes every spec a change every week.
+- **A full evaluation is still the way to be sure.** The fingerprint does not know the Python packages a spec imports, nor
+  anything about the machine that no version string says. Evaluate without `--reuse` at each release.
+- **Speed** is the machine's: a reused result keeps the speed it was measured at.
+- **The private record** (`--incidents`) holds what was found in the specs that were evaluated; a bug found in a spec that was
+  not is in the record of the run that found it.
+- Results that cannot be read are not an error: everything is evaluated, and it says so.
+
 ## Choosing between grammars: `quality.json` and `--compare-with`
 
 Several specs can describe the same format. What is kept of an evaluation for choosing between them is

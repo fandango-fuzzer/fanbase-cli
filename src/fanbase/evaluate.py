@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fanbase import __version__, compare as comparing, quality as quality_results
+from fanbase import __version__, compare as comparing, fingerprint as fingerprints, quality as quality_results
 from fanbase.context import Context
 from fanbase.contrib import changed_specs, checkout, find_fandango, produce
 from fanbase.coverage import DEFAULT_CURVE, CoverageError, CoverageResult, coverage_targets, measure
@@ -78,6 +78,9 @@ class SpecReport:
     targets: list[TargetReport] = field(default_factory=list)
     decodes: str | None = None
     unjudged: str = ""  # why no target judged it
+    fingerprint: str = ""  # everything this evaluation depends on (see fingerprint.py)
+    reused: dict | None = None  # the earlier row of quality.json, when nothing it depends on has changed (--reuse)
+    reused_made: str | None = None  # when that row was made
 
     @property
     def per_second(self) -> float:
@@ -85,6 +88,8 @@ class SpecReport:
 
     @property
     def best(self) -> float | None:
+        if self.reused is not None:
+            return self.reused.get("best_accepted")
         ran = [t.result for t in self.targets if t.status == "ok" and t.result and t.result.total]
         return max((r.accepted / r.total for r in ran), default=None)
 
@@ -153,6 +158,18 @@ def evaluate_spec(reg: Registry, entry: Entry, ctx: Context, args, fandango: str
                            if not report.targets else "none of the targets judges this format")
         return report
 
+    report.fingerprint = fingerprints.of(reg, entry, ctx, targets, {
+        "count": args.count, "seed": args.seed, "budget": args.budget, "coverage": bool(getattr(args, "coverage", False)),
+        "curve": list(getattr(args, "curve_points", ())), "fandango": _fandango_version(), "fanbase": __version__})
+    earlier = getattr(args, "reuse_doc", None)
+    row = earlier["specs"].get(str(entry)) if earlier is not None else None
+    if earlier is not None and row and row.get("fingerprint") == report.fingerprint and row.get("sha256") == report.sha256 \
+            and (row.get("targets") or row.get("coverage")):
+        report.reused, report.reused_made = row, earlier.get("made")
+        report.produced = row.get("count") or 0
+        report.seconds = report.produced / row["per_second"] if row.get("per_second") else 0.0
+        return report
+
     made = produce(reg, entry, ctx, count=args.count, timeout=1800, fandango=fandango,
                    install_them=not args.no_requirements, say=say, seed=args.seed, budget=args.budget or None)
     try:
@@ -209,6 +226,8 @@ def to_json(reports: list[SpecReport], args) -> dict:
                 "spec": str(r.entry),
                 "version": r.version,
                 "sha256": r.sha256,
+                "fingerprint": r.fingerprint or None,
+                **({"reused": {"made": r.reused_made, "row": r.reused}} if r.reused is not None else {}),
                 "generated": {"requested": r.requested, "produced": r.produced, "seconds": round(r.seconds, 3),
                               "per_second": round(r.per_second, 2), "note": r.note or None},
                 "error": r.error,
@@ -295,6 +314,13 @@ def as_text(reports: list[SpecReport], args) -> str:
         if r.error:
             out += [f"{head}: no inputs: {clean(r.error)}", ""]
             continue
+        if r.reused is not None:
+            out.append(f"{head}: not evaluated again, nothing it depends on has changed since {clean(r.reused_made or 'the results')}"
+                       f": {quality_results.summary(r.reused)}")
+            if expect := _expectation(r):
+                out.append(f"  {expect}")
+            out.append("")
+            continue
         out.append(f"{head}: {r.produced} inputs from seed {args.seed} in {r.seconds:.1f}s ({quality_results.speed(r.per_second)}/s)")
         if r.note:
             out.append(f"  note: {clean(r.note)}")
@@ -331,6 +357,12 @@ def as_markdown(reports: list[SpecReport], args) -> str:
         out.append("")
         if r.error:
             out += [f"**No inputs:** {clean(r.error)}", ""]
+            continue
+        if r.reused is not None:
+            out += [f"Not evaluated again: nothing it depends on has changed since {clean(r.reused_made or 'the results')}. "
+                    f"{quality_results.summary(r.reused)}.", ""]
+            if expect := _expectation(r):
+                out += [f"{'✅' if r.met else '⚠️'} {expect}", ""]
             continue
         out.append(f"{r.produced} inputs in {r.seconds:.1f}s ({quality_results.speed(r.per_second)}/s)." + (f" {clean(r.note)}." if r.note else ""))
         out.append("")
@@ -392,6 +424,12 @@ def cmd_evaluate(args, ctx: Context) -> int:
     if getattr(args, "coverage_only", False):
         args.coverage = True
     args.curve_points = _curve(args.curve) if getattr(args, "curve", None) is not None else DEFAULT_CURVE
+    args.reuse_doc = None
+    if getattr(args, "reuse", None):
+        try:
+            args.reuse_doc = quality_results.load(args.reuse)
+        except RegistryError as exc:  # nothing to reuse yet is not a failure: everything is evaluated
+            print(f"nothing reused: {clean(exc)}", file=sys.stderr)
     log = IncidentLog() if args.incidents else None
     reg = checkout(ctx)
     fandango = find_fandango()
@@ -444,6 +482,11 @@ def cmd_evaluate(args, ctx: Context) -> int:
         print(as_text(reports, args), end="")
         if earlier is not None:
             print(comparing.as_text(earlier, differences), end="")
+
+    if args.reuse_doc is not None:
+        reused = sum(1 for r in reports if r.reused is not None)
+        print(f"reused the results of {reused} of {len(reports)} spec(s) from {clean(args.reuse_doc.get('made') or 'earlier')}; "
+              f"evaluated {len(reports) - reused}", file=sys.stderr)
 
     failed = [r for r in reports if r.error]
     if failed:
