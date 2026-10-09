@@ -3,10 +3,12 @@ name: tests
 # The tests on Linux, macOS and Windows, with the oldest and the newest Python the package says it
 # supports, and the type check. There is no secret here, the token can only read, and the only
 # actions are GitHub's own.
+# publish.yml calls this before a release goes to PyPI.
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
