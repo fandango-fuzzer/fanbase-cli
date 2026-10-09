@@ -5,6 +5,7 @@ the spec is evaluated again, or changes something that is not one, and sees that
 
 import json
 import subprocess
+from pathlib import PurePath
 
 import pytest
 import yaml
@@ -66,7 +67,7 @@ def evaluate(capsys, reg, tmp_path, *extra, name="report.json"):
 
 def asked_about(fake):
     """The specs that Fandango was asked for inputs of."""
-    names = {part.split("/")[-1].removesuffix(".fan") for call in fake.calls for part in call["cmd"] if part.endswith(".fan")}
+    names = {PurePath(part).stem for call in fake.calls for part in call["cmd"] if part.endswith(".fan")}  # (a path has \ on Windows)
     fake.calls.clear()
     return names
 
