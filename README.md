@@ -46,6 +46,7 @@ fanbase install png-apng      # copy it where Fandango's include() finds it
 | run with exactly the specs you used before | `lock`, `install --locked` | [Repeating a run](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/using-specs.md#repeating-a-run-fanbaselock) |
 | write a spec and contribute it | `new`, `fork`, `rebase`, `deps`, `check`, `changes`, `publish` | [Writing specs](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/writing-specs.md) |
 | see how well a spec's files do against real parsers | `evaluate`, `targets`, `quality` | [Evaluating a spec](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/evaluating.md) |
+| fuzz your own program, in CI or on your machine | `fuzz` | [Fuzzing your program](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/fuzzing.md) |
 | keep what a parser does on a bad file private | `incidents open`, `send`, `list`, `show`, `track`, `tracked`, `verify` | [The private record](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/private-record.md) |
 | use another registry, or run your own | `registry`, `pin`, `unpin`, `reindex` | [Registries](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/registries.md) |
 | sign a registry, put it on a site, give a spec a DOI | `sign`, `verify`, `site`, `doi` | [Signing, browsing and citing](https://github.com/fandango-fuzzer/fanbase-cli/blob/main/docs/publishing.md) |
