@@ -146,16 +146,27 @@ def _check_files(argv: tuple[str, ...], folder: Path, where: str, what: str) -> 
                 raise TargetError(f"{where}: {what} names {relative}, which is not in the target's folder")
 
 
-def load_target(root: Path, name: str) -> Target:
-    """The target `name` of the registry at `root`; raises TargetError if it is not one."""
+def load_target(root: Path, name: str, extra: list[Path] | tuple[Path, ...] = (), registry: bool = True) -> Target:
+    """The target `name` of the registry at `root`; raises TargetError if it is not one. Folders in `extra`
+    (a project's own targets, as DIR/NAME/target.yml) are looked in first, in their order; with `registry`
+    false, only they are."""
     if not is_safe_name(name):
         raise TargetError(f"{name!r} is not a target name")
+    places = [*((Path(d), str(d)) for d in extra), *([(root / TARGETS_DIRNAME, TARGETS_DIRNAME)] if registry else [])]
+    if not places:
+        raise TargetError(f"no target called {name}: there is no folder of targets to look in")
     # absolute: a target is run from another folder, where a relative path would lead nowhere
-    folder = (root / TARGETS_DIRNAME / name).resolve()
-    path = folder / TARGET_FILENAME
-    where = f"{TARGETS_DIRNAME}/{name}/{TARGET_FILENAME}"
-    if not path.is_file():
-        raise TargetError(f"no target called {name}: there is no {where}")
+    for base, shown in places:
+        folder = (base / name).resolve()
+        path = folder / TARGET_FILENAME
+        where = f"{shown}/{name}/{TARGET_FILENAME}"
+        if path.is_file():
+            break
+    else:
+        if not extra:
+            raise TargetError(f"no target called {name}: there is no {where}")
+        looked = ", ".join(shown for _, shown in places)
+        raise TargetError(f"no target called {name}: there is no {name}/{TARGET_FILENAME} in {looked}")
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
@@ -330,6 +341,19 @@ def judge(target: Target, path: Path, *, timeout: int = 10, memory_mb: int = 204
     return Verdict(INVALID, reason)
 
 
+def ask(target: Target, file: Path, *, timeout: int = 10, memory_mb: int = 2048, cwd: Path | None = None,
+        incidents=None) -> Verdict:
+    """Ask the target about one file, as `judge` does. If it broke on it and `incidents` is given, it is asked
+    once more (a hang with twice the time) so as to say whether it happens again, since a hang can be a busy
+    machine, and `incidents(target, file, verdict, confirmed)` is called."""
+    verdict = judge(target, file, timeout=timeout, memory_mb=memory_mb, cwd=cwd)
+    if verdict.incident and incidents is not None:
+        again = judge(target, file, timeout=timeout * 2 if verdict.incident == HANG_KIND else timeout,
+                      memory_mb=memory_mb, cwd=cwd)
+        incidents(target, file, verdict, again.incident == verdict.incident)
+    return verdict
+
+
 @dataclass
 class TargetResult:
     name: str
@@ -372,25 +396,22 @@ def run_target(target: Target, files: list[Path], *, jobs: int = 1, timeout: int
     started = time.monotonic()
     deadline = None if budget is None else started + budget
 
-    def ask(file: Path) -> Verdict | None:
+    def one(file: Path) -> Verdict | None:
         if deadline is not None and time.monotonic() >= deadline:
             return None
-        verdict = judge(target, file, timeout=timeout, memory_mb=memory_mb, cwd=cwd)
-        if verdict.incident and incidents is not None:
-            again = judge(target, file, timeout=timeout * 2 if verdict.incident == HANG_KIND else timeout,
-                          memory_mb=memory_mb, cwd=cwd)
-            incidents(target, file, verdict, again.incident == verdict.incident)
-        return verdict
+        return ask(target, file, timeout=timeout, memory_mb=memory_mb, cwd=cwd, incidents=incidents)
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        verdicts = list(pool.map(ask, files))
+        verdicts = list(pool.map(one, files))
     result.seconds = time.monotonic() - started
     for verdict in verdicts:
         if verdict is None:
             result.skipped += 1
             continue
         category, reason = verdict.category, verdict.reason
-        if hide_crashes and category in (CRASH, TIMEOUT):
+        # whatever broke the target: a crash, a hang, or being killed for what it used (which is a resource
+        # limit, and can be a bug that makes it use that much)
+        if hide_crashes and verdict.incident:
             category, reason = ERROR, ""
         result.total += 1
         result.counts[category] += 1

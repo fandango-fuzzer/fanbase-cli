@@ -58,6 +58,15 @@ _run = subprocess.run  # every program started here goes through it, so that tes
 
 
 @dataclass
+class Extra:
+    """What else goes into a record besides what broke (what `fanbase fuzz` found): files, lines for its
+    REPORT.md, and keys for its manifest.json."""
+    members: list[tuple[str, bytes]] = field(default_factory=list)
+    index: list[str] = field(default_factory=list)
+    manifest: dict = field(default_factory=dict)
+
+
+@dataclass
 class Incident:
     signature: str
     kind: str  # crash, hang or killed
@@ -196,11 +205,11 @@ random seed {meta['seed']}, {meta['count']} inputs asked for. {meta['platform']}
 """
 
 
-def members(log: IncidentLog, meta: dict) -> list[tuple[str, bytes]]:
+def members(log: IncidentLog, meta: dict, extra: Extra | None = None) -> list[tuple[str, bytes]]:
     """Everything in the record, as (path, content)."""
     found = log.incidents
     manifest = {
-        "schema": 1, **meta, "not_itemised": log.not_itemised,
+        "schema": 1, **meta, **(extra.manifest if extra else {}), "not_itemised": log.not_itemised,
         "incidents": [
             {"id": i.id, "signature": i.signature, "kind": i.kind, "spec": i.spec, "spec_version": i.spec_version,
              "spec_sha256": i.spec_sha256, "target": i.target, "target_version": i.target_version,
@@ -218,6 +227,8 @@ def members(log: IncidentLog, meta: dict) -> list[tuple[str, bytes]]:
     if log.not_itemised:
         index += ["", f"{log.not_itemised} further occurrence(s) of other causes happened after {MAX_INCIDENTS} had been written down; "
                       "run it again on your machine with --incidents to see them."]
+    if extra:
+        index += extra.index
     out.append(("REPORT.md", "\n".join(index).encode() + b"\n"))
     for target_name, files in sorted(log.harness.items()):
         if any(i.target == target_name for i in found):
@@ -226,14 +237,16 @@ def members(log: IncidentLog, meta: dict) -> list[tuple[str, bytes]]:
         out.append((f"{i.id}/REPORT.md", _report(i, meta, log.harness).encode()))
         out.append((f"{i.id}/stderr.txt", i.stderr))
         out += [(f"{i.id}/input-{n}.bin", data) for n, (data, _, _) in enumerate(i.inputs, 1) if data is not None]
+    if extra:
+        out += extra.members
     return out
 
 
-def build_bundle(log: IncidentLog, meta: dict) -> bytes:
+def build_bundle(log: IncidentLog, meta: dict, extra: Extra | None = None) -> bytes:
     """The record as a tar archive, followed by zeros up to a whole number of megabytes."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
-        for name, data in members(log, meta):
+        for name, data in members(log, meta, extra):
             info = tarfile.TarInfo(name)
             info.size, info.mode, info.mtime = len(data), 0o600, int(time.time())
             archive.addfile(info, io.BytesIO(data))
@@ -265,25 +278,27 @@ def check_recipients(recipients: Path) -> None:
         raise RegistryError(f"{recipients}: age cannot use it: {done.stderr.decode(errors='replace').strip()[:200]}")
 
 
-def write_private(log: IncidentLog, meta: dict, directory: Path, recipients: Path | None) -> Path | None:
+def write_private(log: IncidentLog, meta: dict, directory: Path, recipients: Path | None, *, extra: Extra | None = None,
+                  bundle_name: str = BUNDLE_NAME, folder_prefix: str = "incidents") -> Path | None:
     """Write the record into `directory`, which only the user can read. With `recipients` it is one
-    encrypted file, always written; without, a folder in the clear, only if something broke."""
+    encrypted file, always written; without, a folder in the clear, only if something broke or `extra` has
+    something to say."""
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     if recipients is not None:
-        out = directory / BUNDLE_NAME
+        out = directory / bundle_name
         partial = out.with_suffix(".age.part")
-        done = _run(["age", "-R", str(recipients), "-o", str(partial)], input=build_bundle(log, meta), capture_output=True)
+        done = _run(["age", "-R", str(recipients), "-o", str(partial)], input=build_bundle(log, meta, extra), capture_output=True)
         if done.returncode != 0:
             partial.unlink(missing_ok=True)
             raise RegistryError(f"could not encrypt the private record: {done.stderr.decode(errors='replace').strip()[:200]}")
         os.chmod(partial, 0o600)
         os.replace(partial, out)
         return out
-    if not log.incidents:
+    if not log.incidents and not (extra and extra.members):
         return None
-    folder = directory / f"incidents-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
-    for name, data in members(log, meta):
+    folder = directory / f"{folder_prefix}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+    for name, data in members(log, meta, extra):
         path = folder / name
         path.parent.mkdir(parents=True, exist_ok=True)
         for below in (path.parent, *path.parent.parents):  # (every folder between the record and the file)

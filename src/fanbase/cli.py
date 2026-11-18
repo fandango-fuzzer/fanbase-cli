@@ -24,6 +24,7 @@ from fanbase.contrib import cmd_changes, cmd_check, cmd_fork, cmd_new
 from fanbase.discover import cmd_cite, cmd_diff, cmd_outdated, cmd_search
 from fanbase.doi import cmd_doi
 from fanbase.evaluate import cmd_evaluate, cmd_targets
+from fanbase.fuzz import cmd_fuzz
 from fanbase.incident_cmds import cmd_incidents_open, cmd_incidents_send
 from fanbase.incident_track import (
     cmd_incidents_list,
@@ -700,6 +701,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json-file", metavar="FILE", help="also write the report as JSON to FILE")
     p.add_argument("--markdown", action="store_true", help="the report as Markdown (for a CI job summary)")
     p.set_defaults(fn=cmd_evaluate, local=True)
+
+    p = sub.add_parser("fuzz", help="fuzz your own program with inputs from specs; what is found goes into a private record")
+    p.add_argument("refs", nargs="+", metavar="ref", help="the specs to make inputs from")
+    p.add_argument("--targets", metavar="A,B", help="what to fuzz, as targets (default: every target in --target-dir that reads the format, or else those the format names); with two or more, where they disagree is found too")
+    p.add_argument("--target-dir", action="append", default=[], metavar="DIR", help="a folder of targets of your own, as DIR/NAME/target.yml: how to run your program on one file; looked in before the registry's targets (can be given more than once)")
+    p.add_argument("-n", "--count", type=int, default=200, metavar="N", help="inputs to make from each spec (default 200)")
+    p.add_argument("--seed", type=int, default=1, metavar="S", help="the random seed, so the same inputs come out each time (default 1)")
+    p.add_argument("--budget", type=float, default=120, metavar="SECONDS", help="Fandango's time for the inputs of one spec; when it is up, the inputs made so far are used (default 120; 0: no limit)")
+    p.add_argument("--timeout", type=int, default=10, metavar="SECONDS", help="for a target to answer about one file (default 10)")
+    p.add_argument("--memory", type=int, default=2048, metavar="MB", help="a target may use this much memory (default 2048; enforced on Linux)")
+    p.add_argument("-j", "--jobs", type=int, default=min(4, os.cpu_count() or 1), metavar="N", help="files asked about at the same time")
+    p.add_argument("--reduce-budget", type=float, default=60, metavar="SECONDS", help="time to reduce the input of one finding (default 60)")
+    p.add_argument("--no-requirements", action="store_true", help="do not install the Python packages the specs import")
+    p.add_argument("--record", required=True, metavar="DIR", help="where the private record goes: what broke a parser, and the findings (only you can read it)")
+    p.add_argument("--recipients", metavar="FILE", help="encrypt the record with age to the public key(s) in FILE, and print nothing about what was found; for CI")
+    p.add_argument("--json-file", metavar="FILE", help="also write the counts as JSON to FILE")
+    p.add_argument("--markdown", action="store_true", help="the counts as Markdown (for a CI job summary)")
+    p.add_argument("--fail", action="store_true", help="exit 1 if anything was found; in a public log that says that something was, and nothing more")
+    p.add_argument("--only-own-targets", action="store_true", help="fuzz only targets of --target-dir that run a harness of their own folder, never the registry's: a project's own program (the GitHub Action always says so)")
+    p.set_defaults(fn=cmd_fuzz, local=True)
 
     p = sub.add_parser("targets", help="the targets of the registry checkout, and whether they can run here")
     p.set_defaults(fn=cmd_targets, local=True)

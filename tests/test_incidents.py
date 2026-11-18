@@ -205,6 +205,17 @@ def test_being_killed_for_what_it_used_is_an_incident_too(capsys, reg, fandango,
     assert json.loads((folder / "manifest.json").read_text())["incidents"][0]["kind"] == "killed"
 
 
+@posix
+def test_and_a_public_report_hides_it_as_it_hides_a_crash(capsys, reg, fandango):
+    target(reg, "oom", "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n")
+    (reg / "specs/png/format.yml").write_text(yaml.safe_dump({"targets": ["oom"]}))
+    settle(reg)
+    _, out, err = evaluate(capsys, reg, "-n", "2", "--hide-crashes", "--json")
+    oom, = json.loads(out)["specs"][0]["targets"]
+    assert oom["categories"]["error"] == 2 and oom["categories"]["resource-limit"] == 0 and oom["reasons"] == []
+    assert "SIGKILL" not in out + err and "killed by" not in out + err
+
+
 # --- the encrypted record, for CI
 
 @posix
